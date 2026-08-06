@@ -1,0 +1,6 @@
+{
+  "name": "MedTrack",
+  "description": "Intelligent personal workspace for medical students to track lectures, active recall, lifestyle, and academic performance.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
