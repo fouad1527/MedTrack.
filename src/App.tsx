@@ -10,6 +10,7 @@ import { ResultsView } from './components/ResultsView';
 import { PerformanceView } from './components/PerformanceView';
 import { LifestyleView } from './components/LifestyleView';
 import { SettingsView } from './components/SettingsView';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 const MainLayout: React.FC = () => {
   const { isAuthenticated, authLoading, activeTab } = useMedTrack();
@@ -91,7 +92,9 @@ const MainLayout: React.FC = () => {
 
       {/* Main View Area */}
       <main className="md:ml-[260px] min-h-[calc(100vh-64px)] transition-all duration-300">
-        {renderActiveTabContent()}
+        <ErrorBoundary fallbackTitle="Workspace view error.">
+          {renderActiveTabContent()}
+        </ErrorBoundary>
       </main>
     </div>
   );

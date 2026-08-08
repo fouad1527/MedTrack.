@@ -36,7 +36,7 @@ export const DashboardView: React.FC = () => {
   const [customInsight, setCustomInsight] = useState<string | null>(null);
 
   // Today's Mission interactive task state
-  const [task1Done, setTask1Done] = useState(journeyMetrics.completedTodayCount > 0);
+  const [task1Done, setTask1Done] = useState((journeyMetrics.completedWeeklyReviewsCount || 0) > 0);
   const [task2Done, setTask2Done] = useState(journeyMetrics.lectureCompletionRate > 20);
   const [task3Done, setTask3Done] = useState(journeyMetrics.questionSolvingRate > 20);
 
@@ -44,7 +44,7 @@ export const DashboardView: React.FC = () => {
 
   const currentModule = modules.find(m => m.status === 'ACTIVE' || m.status === 'OPEN') || modules[0];
   
-  const pendingReviewsCount = journeyMetrics.dueTodayCount + journeyMetrics.overdueCount;
+  const pendingReviewsCount = journeyMetrics.pendingWeeklyReviewsCount || 0;
   const missionCompletedCount = (task1Done ? 1 : 0) + (task2Done ? 1 : 0) + (task3Done ? 1 : 0);
   const isMissionAllComplete = missionCompletedCount === 3;
 
@@ -287,7 +287,7 @@ export const DashboardView: React.FC = () => {
               </div>
               <div className="p-3.5 bg-zinc-50 dark:bg-zinc-900/60 rounded-2xl border border-zinc-200/80 dark:border-zinc-800">
                 <p className="text-[10px] text-zinc-500 mb-0.5">Recall (30%)</p>
-                <p className="text-base font-bold text-indigo-600 dark:text-indigo-400 font-mono">{journeyMetrics.retentionScore}%</p>
+                <p className="text-base font-bold text-indigo-600 dark:text-indigo-400 font-mono">{journeyMetrics.weeklyReviewCompletionRate}%</p>
               </div>
             </div>
             <div className="h-2 w-full bg-zinc-200 dark:bg-zinc-800 rounded-full overflow-hidden">

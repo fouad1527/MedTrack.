@@ -90,7 +90,6 @@ export const ModulesView: React.FC = () => {
     const newModuleId = 'mod-' + Date.now();
 
     addModule({
-      id: newModuleId,
       name: newModName.trim(),
       icon: 'layers',
       totalLectures: totalLecsNum,
@@ -98,7 +97,6 @@ export const ModulesView: React.FC = () => {
       color: newModColor,
       description: newModDesc.trim() || 'Medical Curriculum Block',
       estimatedCompletionDate: 'TBD',
-      completedLectures: 0,
     });
 
     setSelectedModuleId(newModuleId);
