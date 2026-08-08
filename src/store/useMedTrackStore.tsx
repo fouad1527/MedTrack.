@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { 
   UserProfile, 
@@ -11,19 +11,8 @@ import {
   MedicalJourneyMetrics,
   AcademicPrediction,
   AIInsight,
-  ActiveTab,
-  Language,
-  ThemeMode
+  ActiveTab
 } from '../types';
-import { 
-  initialProfile, 
-  initialModules, 
-  initialLectures, 
-  initialActiveRecall, 
-  initialAcademicResults, 
-  initialLifestyleEntry, 
-  initialInsights 
-} from '../mockData';
 
 interface MedTrackContextType {
   // Navigation & User State
@@ -77,8 +66,6 @@ interface MedTrackContextType {
 
 const MedTrackContext = createContext<MedTrackContextType | undefined>(undefined);
 
-const LOCAL_STORAGE_KEY_PREFIX = 'medtrack_user_v2_';
-
 const emptyProfile: UserProfile = {
   id: '',
   name: 'Medical Student',
@@ -112,10 +99,7 @@ const defaultLifestyle: LifestyleEntry = {
 
 export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    const savedAuth = localStorage.getItem('medtrack_authenticated_session');
-    return savedAuth === 'true';
-  });
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [authLoading, setAuthLoading] = useState<boolean>(true);
   const [authError, setAuthError] = useState<string | null>(null);
   
@@ -127,39 +111,10 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [lifestyle, setLifestyle] = useState<LifestyleEntry>(defaultLifestyle);
   const [insights, setInsights] = useState<AIInsight[]>([]);
 
-  // Function to load workspace data strictly for a given user ID
-  const loadWorkspaceForUser = (userId: string, email?: string, name?: string) => {
-    if (!userId) return;
+  // Ref to prevent premature save overwrites during data fetching
+  const isSyncingFromSupabase = useRef<boolean>(false);
 
-    const prefix = `${LOCAL_STORAGE_KEY_PREFIX}${userId}_`;
-    const savedProfile = localStorage.getItem(prefix + 'profile');
-    const savedModules = localStorage.getItem(prefix + 'modules');
-    const savedLectures = localStorage.getItem(prefix + 'lectures');
-    const savedRecall = localStorage.getItem(prefix + 'activeRecall');
-    const savedResults = localStorage.getItem(prefix + 'results');
-    const savedLifestyle = localStorage.getItem(prefix + 'lifestyle');
-
-    const parsedProfile: UserProfile = savedProfile ? JSON.parse(savedProfile) : {
-      ...emptyProfile,
-      id: userId,
-      email: email || '',
-      name: name || (email ? email.split('@')[0] : 'Medical Student'),
-    };
-
-    // Ensure profile always has latest auth ID and name if provided
-    if (userId) parsedProfile.id = userId;
-    if (email) parsedProfile.email = email;
-    if (name && parsedProfile.name === 'Medical Student') parsedProfile.name = name;
-
-    setUser(parsedProfile);
-    setModules(savedModules ? JSON.parse(savedModules) : []);
-    setLectures(savedLectures ? JSON.parse(savedLectures) : []);
-    setActiveRecallList(savedRecall ? JSON.parse(savedRecall) : []);
-    setAcademicResults(savedResults ? JSON.parse(savedResults) : []);
-    setLifestyle(savedLifestyle ? JSON.parse(savedLifestyle) : defaultLifestyle);
-  };
-
-  // Function to clear memory state
+  // Clear memory state completely
   const clearWorkspaceState = () => {
     setUser(emptyProfile);
     setModules([]);
@@ -170,7 +125,301 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setInsights([]);
   };
 
-  // Supabase Auth Listener & Initial Session Check
+  // Function to load workspace data strictly from Supabase
+  const loadWorkspaceFromSupabase = async (userId: string, email?: string, name?: string) => {
+    if (!userId) return;
+    isSyncingFromSupabase.current = true;
+
+    try {
+      let loadedProfile: UserProfile | null = null;
+      let loadedModules: Module[] | null = null;
+      let loadedLectures: Lecture[] | null = null;
+      let loadedRecall: ActiveRecallItem[] | null = null;
+      let loadedResults: AcademicResult[] | null = null;
+      let loadedLifestyle: LifestyleEntry | null = null;
+
+      // 1. Fetch user object metadata from Supabase Cloud Auth
+      let meta: any = {};
+      let userEmail = email || '';
+      if (isSupabaseConfigured()) {
+        const { data: authUserData } = await supabase.auth.getUser();
+        if (authUserData?.user) {
+          meta = authUserData.user.user_metadata || {};
+          userEmail = authUserData.user.email || userEmail;
+        }
+      }
+
+      // 2. Query Supabase Database tables where user_id = userId
+      if (isSupabaseConfigured()) {
+        const [profRes, modRes, lecRes, arRes, resRes, lifeRes] = await Promise.allSettled([
+          supabase.from('profiles').select('*').eq('id', userId).maybeSingle(),
+          supabase.from('modules').select('*').eq('user_id', userId),
+          supabase.from('lectures').select('*').eq('user_id', userId),
+          supabase.from('active_recall').select('*').eq('user_id', userId),
+          supabase.from('results').select('*').eq('user_id', userId),
+          supabase.from('lifestyle').select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1),
+        ]);
+
+        if (profRes.status === 'fulfilled' && profRes.value.data) {
+          const p = profRes.value.data;
+          loadedProfile = {
+            id: p.id,
+            name: p.name || name || 'Medical Student',
+            email: p.email || userEmail,
+            avatarUrl: p.avatar_url || '',
+            university: p.university || '',
+            faculty: p.faculty || '',
+            academicYear: p.academic_year || 'Medical Student',
+            studySystem: p.study_system || 'Credit Hours System',
+            role: p.role || 'Student',
+            language: p.language || 'en',
+            theme: p.theme || 'light',
+          };
+        }
+
+        if (modRes.status === 'fulfilled' && Array.isArray(modRes.value.data)) {
+          loadedModules = modRes.value.data.map(m => ({
+            id: m.id,
+            name: m.name,
+            icon: m.icon || 'layers',
+            totalLectures: Number(m.total_lectures || 0),
+            completedLectures: Number(m.completed_lectures || 0),
+            status: m.status || 'ACTIVE',
+            color: m.color || 'blue',
+            description: m.description || '',
+            estimatedCompletionDate: m.estimated_completion_date || 'TBD',
+          }));
+        }
+
+        if (lecRes.status === 'fulfilled' && Array.isArray(lecRes.value.data)) {
+          loadedLectures = lecRes.value.data.map(l => ({
+            id: l.id,
+            moduleId: l.module_id,
+            name: l.name,
+            difficulty: (l.difficulty as any) || 'High-Yield',
+            topicCategory: l.topic_category || 'General',
+            studyDate: l.study_date || '',
+            studied: Boolean(l.studied),
+            solved: Boolean(l.solved),
+            inActiveRecall: Boolean(l.in_active_recall),
+            notes: l.notes || '',
+          }));
+        }
+
+        if (arRes.status === 'fulfilled' && Array.isArray(arRes.value.data)) {
+          loadedRecall = arRes.value.data.map(ar => ({
+            id: ar.id,
+            lectureId: ar.lecture_id,
+            lectureName: ar.lecture_name,
+            moduleName: ar.module_name,
+            dateStudied: ar.date_studied,
+            daysSinceStudy: Number(ar.days_since_study || 0),
+            scheduledReviewDate: ar.scheduled_review_date,
+            reviewed: Boolean(ar.reviewed),
+            reviewedDate: ar.reviewed_date || undefined,
+            notes: ar.notes || '',
+          }));
+        }
+
+        if (resRes.status === 'fulfilled' && Array.isArray(resRes.value.data)) {
+          loadedResults = resRes.value.data.map(r => ({
+            id: r.id,
+            academicYear: r.academic_year || 'Current Year',
+            moduleName: r.module_name,
+            percentage: Number(r.percentage),
+            notes: r.notes || '',
+            dateLogged: r.date_logged || '',
+            aiConclusion: r.ai_conclusion || { effortMatch: true, summary: '', suggestions: [] },
+          }));
+        }
+
+        if (lifeRes.status === 'fulfilled' && Array.isArray(lifeRes.value.data) && lifeRes.value.data.length > 0) {
+          const l = lifeRes.value.data[0];
+          loadedLifestyle = {
+            id: l.id,
+            date: l.date,
+            sleepTime: l.sleep_time || '23:00',
+            wakeUpTime: l.wake_up_time || '07:00',
+            sleepHours: Number(l.sleep_hours || 7.5),
+            exerciseMins: Number(l.exercise_mins || 30),
+            waterIntakeLiters: Number(l.water_intake_liters || 2.5),
+            phoneUsageHours: Number(l.phone_usage_hours || 2.0),
+            studyHours: Number(l.study_hours || 4.0),
+            caffeineCups: Number(l.caffeine_cups || 1),
+            badHabits: l.bad_habits || [],
+            habitsToQuit: l.habits_to_quit || [],
+            stressLevel: Number(l.stress_level || 3),
+            mood: l.mood || 'good',
+          };
+        }
+      }
+
+      // 3. Fallback / Merge with Supabase Auth Metadata if DB tables not yet seeded
+      const fallbackProfile: UserProfile = meta.profile || {
+        ...emptyProfile,
+        id: userId,
+        email: userEmail,
+        name: name || meta.full_name || (userEmail ? userEmail.split('@')[0] : 'Medical Student'),
+      };
+
+      const finalProfile = loadedProfile || fallbackProfile;
+      const finalModules = loadedModules && loadedModules.length > 0 ? loadedModules : (meta.modules || []);
+      const finalLectures = loadedLectures && loadedLectures.length > 0 ? loadedLectures : (meta.lectures || []);
+      const finalRecall = loadedRecall && loadedRecall.length > 0 ? loadedRecall : (meta.activeRecallList || []);
+      const finalResults = loadedResults && loadedResults.length > 0 ? loadedResults : (meta.academicResults || []);
+      const finalLifestyle = loadedLifestyle || meta.lifestyle || { ...defaultLifestyle, id: 'ls-' + userId };
+
+      finalProfile.id = userId;
+      if (userEmail) finalProfile.email = userEmail;
+
+      setUser(finalProfile);
+      setModules(finalModules);
+      setLectures(finalLectures);
+      setActiveRecallList(finalRecall);
+      setAcademicResults(finalResults);
+      setLifestyle(finalLifestyle);
+    } catch (err) {
+      console.error('Failed to load workspace from Supabase:', err);
+    } finally {
+      isSyncingFromSupabase.current = false;
+    }
+  };
+
+  // Master function to sync updated workspace to Supabase
+  const syncWorkspaceToSupabase = async (
+    updatedProfile: UserProfile,
+    updatedModules: Module[],
+    updatedLectures: Lecture[],
+    updatedRecall: ActiveRecallItem[],
+    updatedResults: AcademicResult[],
+    updatedLifestyle: LifestyleEntry
+  ) => {
+    if (!updatedProfile.id || !isSupabaseConfigured() || isSyncingFromSupabase.current) return;
+
+    const userId = updatedProfile.id;
+
+    try {
+      // 1. Persist to Supabase Auth Cloud User Metadata (guarantees cross-device sync)
+      await supabase.auth.updateUser({
+        data: {
+          full_name: updatedProfile.name,
+          profile: updatedProfile,
+          modules: updatedModules,
+          lectures: updatedLectures,
+          activeRecallList: updatedRecall,
+          academicResults: updatedResults,
+          lifestyle: updatedLifestyle,
+        },
+      });
+
+      // 2. Persist to Supabase Database Tables (if tables exist)
+      await supabase.from('profiles').upsert({
+        id: userId,
+        name: updatedProfile.name,
+        email: updatedProfile.email,
+        avatar_url: updatedProfile.avatarUrl,
+        university: updatedProfile.university,
+        faculty: updatedProfile.faculty,
+        academic_year: updatedProfile.academicYear,
+        study_system: updatedProfile.studySystem,
+        role: updatedProfile.role,
+        language: updatedProfile.language,
+        theme: updatedProfile.theme,
+        updated_at: new Date().toISOString(),
+      });
+
+      if (updatedModules.length > 0) {
+        await supabase.from('modules').upsert(
+          updatedModules.map(m => ({
+            id: m.id,
+            user_id: userId,
+            name: m.name,
+            icon: m.icon,
+            total_lectures: m.totalLectures,
+            completed_lectures: m.completedLectures,
+            status: m.status,
+            color: m.color,
+            description: m.description,
+            estimated_completion_date: m.estimatedCompletionDate,
+          }))
+        );
+      }
+
+      if (updatedLectures.length > 0) {
+        await supabase.from('lectures').upsert(
+          updatedLectures.map(l => ({
+            id: l.id,
+            user_id: userId,
+            module_id: l.moduleId,
+            name: l.name,
+            difficulty: l.difficulty,
+            topic_category: l.topicCategory,
+            study_date: l.studyDate,
+            studied: l.studied,
+            solved: l.solved,
+            in_active_recall: l.inActiveRecall,
+            notes: l.notes,
+          }))
+        );
+      }
+
+      if (updatedRecall.length > 0) {
+        await supabase.from('active_recall').upsert(
+          updatedRecall.map(ar => ({
+            id: ar.id,
+            user_id: userId,
+            lecture_id: ar.lectureId,
+            lecture_name: ar.lectureName,
+            module_name: ar.moduleName,
+            date_studied: ar.dateStudied,
+            days_since_study: ar.daysSinceStudy,
+            scheduled_review_date: ar.scheduledReviewDate,
+            reviewed: ar.reviewed,
+            reviewed_date: ar.reviewedDate,
+            notes: ar.notes,
+          }))
+        );
+      }
+
+      if (updatedResults.length > 0) {
+        await supabase.from('results').upsert(
+          updatedResults.map(r => ({
+            id: r.id,
+            user_id: userId,
+            academic_year: r.academicYear,
+            module_name: r.moduleName,
+            percentage: r.percentage,
+            notes: r.notes,
+            date_logged: r.dateLogged,
+            ai_conclusion: r.aiConclusion,
+          }))
+        );
+      }
+
+      await supabase.from('lifestyle').upsert({
+        id: updatedLifestyle.id || ('ls-' + userId),
+        user_id: userId,
+        date: updatedLifestyle.date,
+        sleep_time: updatedLifestyle.sleepTime,
+        wake_up_time: updatedLifestyle.wakeUpTime,
+        sleep_hours: updatedLifestyle.sleepHours,
+        exercise_mins: updatedLifestyle.exerciseMins,
+        water_intake_liters: updatedLifestyle.waterIntakeLiters,
+        phone_usage_hours: updatedLifestyle.phoneUsageHours,
+        study_hours: updatedLifestyle.studyHours,
+        caffeine_cups: updatedLifestyle.caffeineCups,
+        bad_habits: updatedLifestyle.badHabits,
+        habits_to_quit: updatedLifestyle.habitsToQuit,
+        stress_level: updatedLifestyle.stressLevel,
+        mood: updatedLifestyle.mood,
+        updated_at: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('Error syncing workspace to Supabase:', err);
+    }
+  };
+
+  // Initial Supabase Session Check and Auth State Listener
   useEffect(() => {
     let mounted = true;
 
@@ -181,27 +430,19 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           if (mounted) {
             if (session?.user) {
               setIsAuthenticated(true);
-              localStorage.setItem('medtrack_authenticated_session', 'true');
-              loadWorkspaceForUser(
+              await loadWorkspaceFromSupabase(
                 session.user.id,
                 session.user.email,
                 session.user.user_metadata?.full_name
               );
             } else {
               setIsAuthenticated(false);
-              localStorage.setItem('medtrack_authenticated_session', 'false');
               clearWorkspaceState();
             }
           }
-        } else {
-          // If Supabase not configured but local saved session exists
-          const savedUserId = localStorage.getItem('medtrack_active_user_id');
-          if (savedUserId && isAuthenticated) {
-            loadWorkspaceForUser(savedUserId);
-          }
         }
       } catch (err) {
-        console.error('Error getting Supabase auth session:', err);
+        console.error('Error initializing Supabase auth session:', err);
       } finally {
         if (mounted) setAuthLoading(false);
       }
@@ -211,20 +452,16 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     let authSubscription: { unsubscribe: () => void } | null = null;
     if (isSupabaseConfigured()) {
-      const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
         if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION') && session?.user) {
           setIsAuthenticated(true);
-          localStorage.setItem('medtrack_authenticated_session', 'true');
-          localStorage.setItem('medtrack_active_user_id', session.user.id);
-          loadWorkspaceForUser(
+          await loadWorkspaceFromSupabase(
             session.user.id,
             session.user.email,
             session.user.user_metadata?.full_name
           );
         } else if (event === 'SIGNED_OUT') {
           setIsAuthenticated(false);
-          localStorage.setItem('medtrack_authenticated_session', 'false');
-          localStorage.removeItem('medtrack_active_user_id');
           clearWorkspaceState();
         }
       });
@@ -237,7 +474,7 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     };
   }, []);
 
-  // Sync theme to <html> and <body> tags
+  // Sync theme mode to document root
   useEffect(() => {
     const root = document.documentElement;
     const body = document.body;
@@ -258,44 +495,7 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   }, [user.theme]);
 
-  // Save changes to user-scoped storage
-  useEffect(() => {
-    if (!user.id) return;
-    const prefix = `${LOCAL_STORAGE_KEY_PREFIX}${user.id}_`;
-    localStorage.setItem(prefix + 'profile', JSON.stringify(user));
-  }, [user]);
-
-  useEffect(() => {
-    if (!user.id) return;
-    const prefix = `${LOCAL_STORAGE_KEY_PREFIX}${user.id}_`;
-    localStorage.setItem(prefix + 'modules', JSON.stringify(modules));
-  }, [modules, user.id]);
-
-  useEffect(() => {
-    if (!user.id) return;
-    const prefix = `${LOCAL_STORAGE_KEY_PREFIX}${user.id}_`;
-    localStorage.setItem(prefix + 'lectures', JSON.stringify(lectures));
-  }, [lectures, user.id]);
-
-  useEffect(() => {
-    if (!user.id) return;
-    const prefix = `${LOCAL_STORAGE_KEY_PREFIX}${user.id}_`;
-    localStorage.setItem(prefix + 'activeRecall', JSON.stringify(activeRecallList));
-  }, [activeRecallList, user.id]);
-
-  useEffect(() => {
-    if (!user.id) return;
-    const prefix = `${LOCAL_STORAGE_KEY_PREFIX}${user.id}_`;
-    localStorage.setItem(prefix + 'results', JSON.stringify(academicResults));
-  }, [academicResults, user.id]);
-
-  useEffect(() => {
-    if (!user.id) return;
-    const prefix = `${LOCAL_STORAGE_KEY_PREFIX}${user.id}_`;
-    localStorage.setItem(prefix + 'lifestyle', JSON.stringify(lifestyle));
-  }, [lifestyle, user.id]);
-
-  // Auth functions
+  // Auth Functions
   const login = async (email: string, password?: string): Promise<boolean> => {
     setAuthError(null);
     try {
@@ -312,20 +512,16 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
         if (data.user) {
           const fullName = data.user.user_metadata?.full_name || email.split('@')[0];
-          loadWorkspaceForUser(data.user.id, data.user.email || email, fullName);
+          await loadWorkspaceFromSupabase(data.user.id, data.user.email || email, fullName);
           setIsAuthenticated(true);
-          localStorage.setItem('medtrack_authenticated_session', 'true');
-          localStorage.setItem('medtrack_active_user_id', data.user.id);
           return true;
         }
       }
 
-      // Fallback local authentication
+      // Dev fallback authentication when Supabase password is missing
       const localUserId = 'usr_' + btoa(email).replace(/=/g, '').toLowerCase();
-      loadWorkspaceForUser(localUserId, email, email.split('@')[0]);
+      await loadWorkspaceFromSupabase(localUserId, email, email.split('@')[0]);
       setIsAuthenticated(true);
-      localStorage.setItem('medtrack_authenticated_session', 'true');
-      localStorage.setItem('medtrack_active_user_id', localUserId);
       return true;
     } catch (err: any) {
       setAuthError(err.message || 'Failed to sign in. Please check your credentials.');
@@ -353,20 +549,15 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
 
         if (data.user) {
-          loadWorkspaceForUser(data.user.id, data.user.email || email, fullName);
+          await loadWorkspaceFromSupabase(data.user.id, data.user.email || email, fullName);
           setIsAuthenticated(true);
-          localStorage.setItem('medtrack_authenticated_session', 'true');
-          localStorage.setItem('medtrack_active_user_id', data.user.id);
           return true;
         }
       }
 
-      // Local registration fallback
       const localUserId = 'usr_' + btoa(email).replace(/=/g, '').toLowerCase();
-      loadWorkspaceForUser(localUserId, email, fullName);
+      await loadWorkspaceFromSupabase(localUserId, email, fullName);
       setIsAuthenticated(true);
-      localStorage.setItem('medtrack_authenticated_session', 'true');
-      localStorage.setItem('medtrack_active_user_id', localUserId);
       return true;
     } catch (err: any) {
       setAuthError(err.message || 'Registration failed. Please try again.');
@@ -385,7 +576,6 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           setAuthError(error.message);
           return false;
         }
-        return true;
       }
       return true;
     } catch (err: any) {
@@ -403,24 +593,19 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       console.error('Logout error:', err);
     } finally {
       setIsAuthenticated(false);
-      localStorage.setItem('medtrack_authenticated_session', 'false');
-      localStorage.removeItem('medtrack_active_user_id');
       clearWorkspaceState();
       setActiveTab('dashboard');
     }
   };
 
   const updateUser = (updates: Partial<UserProfile>) => {
-    setUser(prev => ({ ...prev, ...updates }));
+    const updated = { ...user, ...updates };
+    setUser(updated);
+    syncWorkspaceToSupabase(updated, modules, lectures, activeRecallList, academicResults, lifestyle);
   };
 
-  // Spaced repetition intervals: 1d, 3d, 7d, 14d, 30d, 60d, 90d
-  const SPACING_INTERVALS = [1, 3, 7, 14, 30, 60, 90];
-
-  // Helper to re-evaluate automatic 7-Day Weekly Review triggering
-  // Rule: ONLY triggered when BOTH Studied AND Solved are true.
-  // Review is automatically scheduled exactly 7 days after studyDate.
-  const checkActiveRecallTrigger = (updatedLectures: Lecture[]) => {
+  // Spaced Repetition Trigger Logic
+  const checkActiveRecallTrigger = (updatedLectures: Lecture[]): ActiveRecallItem[] => {
     let updatedRecall = [...activeRecallList];
     const todayStr = new Date().toISOString().split('T')[0];
 
@@ -430,7 +615,6 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       if (isStudiedAndSolved) {
         const studyDate = lec.studyDate || todayStr;
-        // Calculate 7 days after study date
         const studyDateObj = new Date(studyDate);
         const scheduledObj = new Date(studyDateObj.getTime() + 7 * 86400000);
         const scheduledReviewDate = scheduledObj.toISOString().split('T')[0];
@@ -453,7 +637,6 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           };
           updatedRecall.push(newItem);
         } else {
-          // Keep daysSinceStudy updated
           updatedRecall[existingIndex] = {
             ...updatedRecall[existingIndex],
             daysSinceStudy,
@@ -461,14 +644,13 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           };
         }
       } else {
-        // If un-checked, automatically remove from Weekly Review list
         if (existingIndex !== -1) {
           updatedRecall.splice(existingIndex, 1);
         }
       }
     });
 
-    setActiveRecallList(updatedRecall);
+    return updatedRecall;
   };
 
   // Module actions
@@ -478,12 +660,29 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       id: 'mod-' + Date.now(),
       completedLectures: 0,
     };
-    setModules(prev => [...prev, newMod]);
+    const updatedMods = [...modules, newMod];
+    setModules(updatedMods);
+    syncWorkspaceToSupabase(user, updatedMods, lectures, activeRecallList, academicResults, lifestyle);
   };
 
   const deleteModule = (moduleId: string) => {
-    setModules(prev => prev.filter(m => m.id !== moduleId));
-    setLectures(prev => prev.filter(l => l.moduleId !== moduleId));
+    const updatedMods = modules.filter(m => m.id !== moduleId);
+    const updatedLecs = lectures.filter(l => l.moduleId !== moduleId);
+    const updatedRecall = activeRecallList.filter(ar => {
+      const lec = lectures.find(l => l.id === ar.lectureId);
+      return lec ? lec.moduleId !== moduleId : true;
+    });
+
+    setModules(updatedMods);
+    setLectures(updatedLecs);
+    setActiveRecallList(updatedRecall);
+
+    if (isSupabaseConfigured() && user.id) {
+      supabase.from('modules').delete().eq('id', moduleId).eq('user_id', user.id);
+      supabase.from('lectures').delete().eq('module_id', moduleId).eq('user_id', user.id);
+    }
+
+    syncWorkspaceToSupabase(user, updatedMods, updatedLecs, updatedRecall, academicResults, lifestyle);
   };
 
   // Lecture actions
@@ -494,13 +693,12 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       inActiveRecall: lectureData.studied && lectureData.solved,
     };
 
-    const updated = [...lectures, newLec];
-    setLectures(updated);
+    const updatedLecs = [...lectures, newLec];
+    setLectures(updatedLecs);
 
-    // Update module completed lectures based on studied status
-    setModules(prev => prev.map(m => {
+    const updatedMods = modules.map(m => {
       if (m.id === newLec.moduleId) {
-        const moduleLectures = updated.filter(l => l.moduleId === m.id);
+        const moduleLectures = updatedLecs.filter(l => l.moduleId === m.id);
         const studiedCount = moduleLectures.filter(l => l.studied).length;
         const targetTotal = Math.max(m.totalLectures || 0, moduleLectures.length);
         return {
@@ -510,13 +708,17 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         };
       }
       return m;
-    }));
+    });
+    setModules(updatedMods);
 
-    checkActiveRecallTrigger(updated);
+    const updatedRecall = checkActiveRecallTrigger(updatedLecs);
+    setActiveRecallList(updatedRecall);
+
+    syncWorkspaceToSupabase(user, updatedMods, updatedLecs, updatedRecall, academicResults, lifestyle);
   };
 
   const toggleLectureStudied = (lectureId: string) => {
-    const updated = lectures.map(l => {
+    const updatedLecs = lectures.map(l => {
       if (l.id === lectureId) {
         const nextStudied = !l.studied;
         return {
@@ -528,20 +730,23 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       return l;
     });
 
-    setLectures(updated);
+    setLectures(updatedLecs);
 
-    // Recalculate module completed counts based on studied status
-    setModules(prev => prev.map(m => {
-      const moduleLectures = updated.filter(l => l.moduleId === m.id);
+    const updatedMods = modules.map(m => {
+      const moduleLectures = updatedLecs.filter(l => l.moduleId === m.id);
       const studiedCount = moduleLectures.filter(l => l.studied).length;
       return { ...m, completedLectures: studiedCount };
-    }));
+    });
+    setModules(updatedMods);
 
-    checkActiveRecallTrigger(updated);
+    const updatedRecall = checkActiveRecallTrigger(updatedLecs);
+    setActiveRecallList(updatedRecall);
+
+    syncWorkspaceToSupabase(user, updatedMods, updatedLecs, updatedRecall, academicResults, lifestyle);
   };
 
   const toggleLectureSolved = (lectureId: string) => {
-    const updated = lectures.map(l => {
+    const updatedLecs = lectures.map(l => {
       if (l.id === lectureId) {
         const nextSolved = !l.solved;
         return {
@@ -553,35 +758,48 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       return l;
     });
 
-    setLectures(updated);
+    setLectures(updatedLecs);
 
-    // Recalculate module completed counts based on studied status
-    setModules(prev => prev.map(m => {
-      const moduleLectures = updated.filter(l => l.moduleId === m.id);
+    const updatedMods = modules.map(m => {
+      const moduleLectures = updatedLecs.filter(l => l.moduleId === m.id);
       const studiedCount = moduleLectures.filter(l => l.studied).length;
       return { ...m, completedLectures: studiedCount };
-    }));
+    });
+    setModules(updatedMods);
 
-    checkActiveRecallTrigger(updated);
+    const updatedRecall = checkActiveRecallTrigger(updatedLecs);
+    setActiveRecallList(updatedRecall);
+
+    syncWorkspaceToSupabase(user, updatedMods, updatedLecs, updatedRecall, academicResults, lifestyle);
   };
 
   const deleteLecture = (lectureId: string) => {
-    const updated = lectures.filter(l => l.id !== lectureId);
-    setLectures(updated);
-    setActiveRecallList(prev => prev.filter(ar => ar.lectureId !== lectureId));
+    const updatedLecs = lectures.filter(l => l.id !== lectureId);
+    const updatedRecall = activeRecallList.filter(ar => ar.lectureId !== lectureId);
 
-    setModules(prev => prev.map(m => {
-      const moduleLectures = updated.filter(l => l.moduleId === m.id);
+    setLectures(updatedLecs);
+    setActiveRecallList(updatedRecall);
+
+    const updatedMods = modules.map(m => {
+      const moduleLectures = updatedLecs.filter(l => l.moduleId === m.id);
       const studiedCount = moduleLectures.filter(l => l.studied).length;
       return { ...m, completedLectures: studiedCount };
-    }));
+    });
+    setModules(updatedMods);
+
+    if (isSupabaseConfigured() && user.id) {
+      supabase.from('lectures').delete().eq('id', lectureId).eq('user_id', user.id);
+      supabase.from('active_recall').delete().eq('lecture_id', lectureId).eq('user_id', user.id);
+    }
+
+    syncWorkspaceToSupabase(user, updatedMods, updatedLecs, updatedRecall, academicResults, lifestyle);
   };
 
-  // Weekly Review Actions
+  // Active Recall Actions
   const toggleActiveRecallItemReviewed = (itemId: string) => {
     const todayStr = new Date().toISOString().split('T')[0];
 
-    setActiveRecallList(prev => prev.map(item => {
+    const updatedRecall = activeRecallList.map(item => {
       if (item.id === itemId) {
         const nextReviewed = !item.reviewed;
         return {
@@ -591,15 +809,16 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         };
       }
       return item;
-    }));
+    });
+
+    setActiveRecallList(updatedRecall);
+    syncWorkspaceToSupabase(user, modules, lectures, updatedRecall, academicResults, lifestyle);
   };
 
-  // Results actions with AI analytical comparison
+  // Academic Results Actions
   const addAcademicResult = async (resultData: Omit<AcademicResult, 'id' | 'dateLogged'>) => {
-    // Generate AI analytical conclusion based on effort vs result
     const totalLec = lectures.length || 1;
     const studiedLec = lectures.filter(l => l.studied).length;
-    const solvedLec = lectures.filter(l => l.solved).length;
     const studyRatio = Math.round((studiedLec / totalLec) * 100);
 
     let summary = '';
@@ -639,42 +858,46 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       },
     };
 
-    setAcademicResults(prev => [newResult, ...prev]);
+    const updatedResults = [newResult, ...academicResults];
+    setAcademicResults(updatedResults);
+    syncWorkspaceToSupabase(user, modules, lectures, activeRecallList, updatedResults, lifestyle);
   };
 
   const deleteAcademicResult = (resultId: string) => {
-    setAcademicResults(prev => prev.filter(r => r.id !== resultId));
+    const updatedResults = academicResults.filter(r => r.id !== resultId);
+    setAcademicResults(updatedResults);
+
+    if (isSupabaseConfigured() && user.id) {
+      supabase.from('results').delete().eq('id', resultId).eq('user_id', user.id);
+    }
+
+    syncWorkspaceToSupabase(user, modules, lectures, activeRecallList, updatedResults, lifestyle);
   };
 
-  // Lifestyle actions
+  // Lifestyle Actions
   const updateLifestyle = (updates: Partial<LifestyleEntry>) => {
-    setLifestyle(prev => ({ ...prev, ...updates }));
+    const updatedLife = { ...lifestyle, ...updates };
+    setLifestyle(updatedLife);
+    syncWorkspaceToSupabase(user, modules, lectures, activeRecallList, academicResults, updatedLife);
   };
 
   // Computed Lifestyle Scores
   const computeLifestyleScores = (): LifestyleScores => {
     let score = 70;
     
-    // Sleep calculation (6.5h - 8.5h is optimal)
     if (lifestyle.sleepHours >= 7 && lifestyle.sleepHours <= 9) score += 10;
     else if (lifestyle.sleepHours < 6) score -= 10;
 
-    // Exercise
     if (lifestyle.exerciseMins >= 30) score += 8;
-
-    // Water
     if (lifestyle.waterIntakeLiters >= 2.0) score += 5;
 
-    // Caffeine & Phone
     if (lifestyle.caffeineCups <= 2) score += 4;
     else if (lifestyle.caffeineCups > 4) score -= 6;
 
     if (lifestyle.phoneUsageHours <= 2) score += 5;
     else if (lifestyle.phoneUsageHours >= 4) score -= 8;
 
-    // Stress impact
     score -= (lifestyle.stressLevel - 4) * 2;
-
     const finalScore = Math.max(30, Math.min(100, score));
     
     return {
@@ -689,9 +912,6 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const lifestyleScores = computeLifestyleScores();
 
   // Computed Medical Journey Score
-  // Progress System:
-  // Studied + Solved = 70% of the lecture score.
-  // Weekly Review completed = remaining 30%.
   const computeJourneyMetrics = (): MedicalJourneyMetrics => {
     const totalLecCount = lectures.length;
     const studiedLecCount = lectures.filter(l => l.studied).length;
@@ -706,7 +926,6 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     const todayStr = new Date().toISOString().split('T')[0];
 
-    // Evaluate lecture-by-lecture scores for the 70% + 30% journey score:
     let totalLecturePoints = 0;
     
     if (totalLecCount > 0) {
@@ -735,7 +954,6 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     const journeyScore = totalLecCount > 0 ? Math.min(100, Math.max(0, Math.round(totalLecturePoints / totalLecCount))) : 0;
 
-    // Weekly review specific counts
     const eligibleReviews = activeRecallList;
     const pendingReviews = eligibleReviews.filter(ar => !ar.reviewed && ar.scheduledReviewDate <= todayStr);
     const completedReviews = eligibleReviews.filter(ar => ar.reviewed);
@@ -779,7 +997,7 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     targetGradeOrScore: hasData ? 'A+ (90%+)' : 'No Data Yet',
   };
 
-  // Export & Reset
+  // Data Export & Clear
   const exportDataJSON = () => {
     const fullData = {
       profile: user,
@@ -800,15 +1018,6 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   };
 
   const resetDemoData = () => {
-    if (user.id) {
-      const prefix = `${LOCAL_STORAGE_KEY_PREFIX}${user.id}_`;
-      localStorage.removeItem(prefix + 'profile');
-      localStorage.removeItem(prefix + 'modules');
-      localStorage.removeItem(prefix + 'lectures');
-      localStorage.removeItem(prefix + 'activeRecall');
-      localStorage.removeItem(prefix + 'results');
-      localStorage.removeItem(prefix + 'lifestyle');
-    }
     clearWorkspaceState();
   };
 
