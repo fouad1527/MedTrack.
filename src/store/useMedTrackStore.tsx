@@ -125,9 +125,9 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setInsights([]);
   };
 
-  // Function to load workspace data strictly from Supabase
+  // Function to load workspace data strictly from server database API & Supabase
   const loadWorkspaceFromSupabase = async (userId: string, email?: string, name?: string) => {
-    if (!userId) return;
+    if (!userId && !email) return;
     isSyncingFromSupabase.current = true;
 
     try {
@@ -138,139 +138,163 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       let loadedResults: AcademicResult[] | null = null;
       let loadedLifestyle: LifestyleEntry | null = null;
 
-      // 1. Fetch user object metadata from Supabase Cloud Auth
+      // 1. Load from persistent server database API
+      try {
+        const apiRes = await fetch('/api/workspace/get', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId, email }),
+        });
+        if (apiRes.ok) {
+          const apiData = await apiRes.json();
+          if (apiData.success && apiData.workspace) {
+            const w = apiData.workspace;
+            loadedProfile = w.profile;
+            loadedModules = w.modules;
+            loadedLectures = w.lectures;
+            loadedRecall = w.activeRecallList;
+            loadedResults = w.academicResults;
+            loadedLifestyle = w.lifestyle;
+          }
+        }
+      } catch (err) {
+        console.warn('Backend API workspace get warning:', err);
+      }
+
+      // 2. Query Supabase Database tables & Auth Metadata where user_id = userId if configured
       let meta: any = {};
       let userEmail = email || '';
       if (isSupabaseConfigured()) {
-        const { data: authUserData } = await supabase.auth.getUser();
-        if (authUserData?.user) {
-          meta = authUserData.user.user_metadata || {};
-          userEmail = authUserData.user.email || userEmail;
+        try {
+          const { data: authUserData } = await supabase.auth.getUser();
+          if (authUserData?.user) {
+            meta = authUserData.user.user_metadata || {};
+            userEmail = authUserData.user.email || userEmail;
+          }
+
+          const [profRes, modRes, lecRes, arRes, resRes, lifeRes] = await Promise.allSettled([
+            supabase.from('profiles').select('*').eq('id', userId).maybeSingle(),
+            supabase.from('modules').select('*').eq('user_id', userId),
+            supabase.from('lectures').select('*').eq('user_id', userId),
+            supabase.from('active_recall').select('*').eq('user_id', userId),
+            supabase.from('results').select('*').eq('user_id', userId),
+            supabase.from('lifestyle').select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1),
+          ]);
+
+          if (profRes.status === 'fulfilled' && profRes.value.data) {
+            const p = profRes.value.data;
+            loadedProfile = {
+              id: p.id,
+              name: p.name || name || loadedProfile?.name || 'Medical Student',
+              email: p.email || userEmail || loadedProfile?.email || '',
+              avatarUrl: p.avatar_url || loadedProfile?.avatarUrl || '',
+              university: p.university || loadedProfile?.university || '',
+              faculty: p.faculty || loadedProfile?.faculty || '',
+              academicYear: p.academic_year || loadedProfile?.academicYear || 'Medical Student',
+              studySystem: p.study_system || loadedProfile?.studySystem || 'Credit Hours System',
+              role: p.role || loadedProfile?.role || 'Student',
+              language: p.language || loadedProfile?.language || 'en',
+              theme: p.theme || loadedProfile?.theme || 'light',
+            };
+          }
+
+          if (modRes.status === 'fulfilled' && Array.isArray(modRes.value.data) && modRes.value.data.length > 0) {
+            loadedModules = modRes.value.data.map(m => ({
+              id: m.id,
+              name: m.name,
+              icon: m.icon || 'layers',
+              totalLectures: Number(m.total_lectures || 0),
+              completedLectures: Number(m.completed_lectures || 0),
+              status: m.status || 'ACTIVE',
+              color: m.color || 'blue',
+              description: m.description || '',
+              estimatedCompletionDate: m.estimated_completion_date || 'TBD',
+            }));
+          }
+
+          if (lecRes.status === 'fulfilled' && Array.isArray(lecRes.value.data) && lecRes.value.data.length > 0) {
+            loadedLectures = lecRes.value.data.map(l => ({
+              id: l.id,
+              moduleId: l.module_id,
+              name: l.name,
+              difficulty: (l.difficulty as any) || 'High-Yield',
+              topicCategory: l.topic_category || 'General',
+              studyDate: l.study_date || '',
+              studied: Boolean(l.studied),
+              solved: Boolean(l.solved),
+              inActiveRecall: Boolean(l.in_active_recall),
+              notes: l.notes || '',
+            }));
+          }
+
+          if (arRes.status === 'fulfilled' && Array.isArray(arRes.value.data) && arRes.value.data.length > 0) {
+            loadedRecall = arRes.value.data.map(ar => ({
+              id: ar.id,
+              lectureId: ar.lecture_id,
+              lectureName: ar.lecture_name,
+              moduleName: ar.module_name,
+              dateStudied: ar.date_studied,
+              daysSinceStudy: Number(ar.days_since_study || 0),
+              scheduledReviewDate: ar.scheduled_review_date,
+              reviewed: Boolean(ar.reviewed),
+              reviewedDate: ar.reviewed_date || undefined,
+              notes: ar.notes || '',
+            }));
+          }
+
+          if (resRes.status === 'fulfilled' && Array.isArray(resRes.value.data) && resRes.value.data.length > 0) {
+            loadedResults = resRes.value.data.map(r => ({
+              id: r.id,
+              academicYear: r.academic_year || 'Current Year',
+              moduleName: r.module_name,
+              percentage: Number(r.percentage),
+              notes: r.notes || '',
+              dateLogged: r.date_logged || '',
+              aiConclusion: r.ai_conclusion || { effortMatch: true, summary: '', suggestions: [] },
+            }));
+          }
+
+          if (lifeRes.status === 'fulfilled' && Array.isArray(lifeRes.value.data) && lifeRes.value.data.length > 0) {
+            const l = lifeRes.value.data[0];
+            loadedLifestyle = {
+              id: l.id,
+              date: l.date,
+              sleepTime: l.sleep_time || '23:00',
+              wakeUpTime: l.wake_up_time || '07:00',
+              sleepHours: Number(l.sleep_hours || 7.5),
+              exerciseMins: Number(l.exercise_mins || 30),
+              waterIntakeLiters: Number(l.water_intake_liters || 2.5),
+              phoneUsageHours: Number(l.phone_usage_hours || 2.0),
+              studyHours: Number(l.study_hours || 4.0),
+              caffeineCups: Number(l.caffeine_cups || 1),
+              badHabits: l.bad_habits || [],
+              habitsToQuit: l.habits_to_quit || [],
+              stressLevel: Number(l.stress_level || 3),
+              mood: l.mood || 'good',
+            };
+          }
+        } catch (supabaseErr) {
+          console.warn('Supabase query warning:', supabaseErr);
         }
       }
 
-      // 2. Query Supabase Database tables where user_id = userId
-      if (isSupabaseConfigured()) {
-        const [profRes, modRes, lecRes, arRes, resRes, lifeRes] = await Promise.allSettled([
-          supabase.from('profiles').select('*').eq('id', userId).maybeSingle(),
-          supabase.from('modules').select('*').eq('user_id', userId),
-          supabase.from('lectures').select('*').eq('user_id', userId),
-          supabase.from('active_recall').select('*').eq('user_id', userId),
-          supabase.from('results').select('*').eq('user_id', userId),
-          supabase.from('lifestyle').select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1),
-        ]);
-
-        if (profRes.status === 'fulfilled' && profRes.value.data) {
-          const p = profRes.value.data;
-          loadedProfile = {
-            id: p.id,
-            name: p.name || name || 'Medical Student',
-            email: p.email || userEmail,
-            avatarUrl: p.avatar_url || '',
-            university: p.university || '',
-            faculty: p.faculty || '',
-            academicYear: p.academic_year || 'Medical Student',
-            studySystem: p.study_system || 'Credit Hours System',
-            role: p.role || 'Student',
-            language: p.language || 'en',
-            theme: p.theme || 'light',
-          };
-        }
-
-        if (modRes.status === 'fulfilled' && Array.isArray(modRes.value.data)) {
-          loadedModules = modRes.value.data.map(m => ({
-            id: m.id,
-            name: m.name,
-            icon: m.icon || 'layers',
-            totalLectures: Number(m.total_lectures || 0),
-            completedLectures: Number(m.completed_lectures || 0),
-            status: m.status || 'ACTIVE',
-            color: m.color || 'blue',
-            description: m.description || '',
-            estimatedCompletionDate: m.estimated_completion_date || 'TBD',
-          }));
-        }
-
-        if (lecRes.status === 'fulfilled' && Array.isArray(lecRes.value.data)) {
-          loadedLectures = lecRes.value.data.map(l => ({
-            id: l.id,
-            moduleId: l.module_id,
-            name: l.name,
-            difficulty: (l.difficulty as any) || 'High-Yield',
-            topicCategory: l.topic_category || 'General',
-            studyDate: l.study_date || '',
-            studied: Boolean(l.studied),
-            solved: Boolean(l.solved),
-            inActiveRecall: Boolean(l.in_active_recall),
-            notes: l.notes || '',
-          }));
-        }
-
-        if (arRes.status === 'fulfilled' && Array.isArray(arRes.value.data)) {
-          loadedRecall = arRes.value.data.map(ar => ({
-            id: ar.id,
-            lectureId: ar.lecture_id,
-            lectureName: ar.lecture_name,
-            moduleName: ar.module_name,
-            dateStudied: ar.date_studied,
-            daysSinceStudy: Number(ar.days_since_study || 0),
-            scheduledReviewDate: ar.scheduled_review_date,
-            reviewed: Boolean(ar.reviewed),
-            reviewedDate: ar.reviewed_date || undefined,
-            notes: ar.notes || '',
-          }));
-        }
-
-        if (resRes.status === 'fulfilled' && Array.isArray(resRes.value.data)) {
-          loadedResults = resRes.value.data.map(r => ({
-            id: r.id,
-            academicYear: r.academic_year || 'Current Year',
-            moduleName: r.module_name,
-            percentage: Number(r.percentage),
-            notes: r.notes || '',
-            dateLogged: r.date_logged || '',
-            aiConclusion: r.ai_conclusion || { effortMatch: true, summary: '', suggestions: [] },
-          }));
-        }
-
-        if (lifeRes.status === 'fulfilled' && Array.isArray(lifeRes.value.data) && lifeRes.value.data.length > 0) {
-          const l = lifeRes.value.data[0];
-          loadedLifestyle = {
-            id: l.id,
-            date: l.date,
-            sleepTime: l.sleep_time || '23:00',
-            wakeUpTime: l.wake_up_time || '07:00',
-            sleepHours: Number(l.sleep_hours || 7.5),
-            exerciseMins: Number(l.exercise_mins || 30),
-            waterIntakeLiters: Number(l.water_intake_liters || 2.5),
-            phoneUsageHours: Number(l.phone_usage_hours || 2.0),
-            studyHours: Number(l.study_hours || 4.0),
-            caffeineCups: Number(l.caffeine_cups || 1),
-            badHabits: l.bad_habits || [],
-            habitsToQuit: l.habits_to_quit || [],
-            stressLevel: Number(l.stress_level || 3),
-            mood: l.mood || 'good',
-          };
-        }
-      }
-
-      // 3. Fallback / Merge with Supabase Auth Metadata if DB tables not yet seeded
+      // 3. Fallback / Merge with Auth Metadata
       const fallbackProfile: UserProfile = meta.profile || {
         ...emptyProfile,
         id: userId,
-        email: userEmail,
+        email: userEmail || email || '',
         name: name || meta.full_name || (userEmail ? userEmail.split('@')[0] : 'Medical Student'),
       };
 
       const finalProfile = loadedProfile || fallbackProfile;
-      const finalModules = loadedModules && loadedModules.length > 0 ? loadedModules : (meta.modules || []);
-      const finalLectures = loadedLectures && loadedLectures.length > 0 ? loadedLectures : (meta.lectures || []);
-      const finalRecall = loadedRecall && loadedRecall.length > 0 ? loadedRecall : (meta.activeRecallList || []);
-      const finalResults = loadedResults && loadedResults.length > 0 ? loadedResults : (meta.academicResults || []);
+      const finalModules = loadedModules || meta.modules || [];
+      const finalLectures = loadedLectures || meta.lectures || [];
+      const finalRecall = loadedRecall || meta.activeRecallList || [];
+      const finalResults = loadedResults || meta.academicResults || [];
       const finalLifestyle = loadedLifestyle || meta.lifestyle || { ...defaultLifestyle, id: 'ls-' + userId };
 
       finalProfile.id = userId;
-      if (userEmail) finalProfile.email = userEmail;
+      if (userEmail || email) finalProfile.email = userEmail || email || '';
 
       setUser(finalProfile);
       setModules(finalModules);
@@ -278,14 +302,21 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setActiveRecallList(finalRecall);
       setAcademicResults(finalResults);
       setLifestyle(finalLifestyle);
+
+      // Save active session for instant restoration on refresh
+      localStorage.setItem('medtrack_active_session', JSON.stringify({
+        userId,
+        email: finalProfile.email,
+        name: finalProfile.name
+      }));
     } catch (err) {
-      console.error('Failed to load workspace from Supabase:', err);
+      console.error('Failed to load workspace:', err);
     } finally {
       isSyncingFromSupabase.current = false;
     }
   };
 
-  // Master function to sync updated workspace to Supabase
+  // Master function to sync updated workspace to Server Database API & Supabase
   const syncWorkspaceToSupabase = async (
     updatedProfile: UserProfile,
     updatedModules: Module[],
@@ -294,155 +325,192 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     updatedResults: AcademicResult[],
     updatedLifestyle: LifestyleEntry
   ) => {
-    if (!updatedProfile.id || !isSupabaseConfigured() || isSyncingFromSupabase.current) return;
+    if (!updatedProfile.id || isSyncingFromSupabase.current) return;
 
     const userId = updatedProfile.id;
+    const email = updatedProfile.email;
 
+    // 1. Sync to persistent server database API
     try {
-      // 1. Persist to Supabase Auth Cloud User Metadata (guarantees cross-device sync)
-      await supabase.auth.updateUser({
-        data: {
-          full_name: updatedProfile.name,
+      await fetch('/api/workspace/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          email,
           profile: updatedProfile,
           modules: updatedModules,
           lectures: updatedLectures,
           activeRecallList: updatedRecall,
           academicResults: updatedResults,
           lifestyle: updatedLifestyle,
-        },
-      });
-
-      // 2. Persist to Supabase Database Tables (if tables exist)
-      await supabase.from('profiles').upsert({
-        id: userId,
-        name: updatedProfile.name,
-        email: updatedProfile.email,
-        avatar_url: updatedProfile.avatarUrl,
-        university: updatedProfile.university,
-        faculty: updatedProfile.faculty,
-        academic_year: updatedProfile.academicYear,
-        study_system: updatedProfile.studySystem,
-        role: updatedProfile.role,
-        language: updatedProfile.language,
-        theme: updatedProfile.theme,
-        updated_at: new Date().toISOString(),
-      });
-
-      if (updatedModules.length > 0) {
-        await supabase.from('modules').upsert(
-          updatedModules.map(m => ({
-            id: m.id,
-            user_id: userId,
-            name: m.name,
-            icon: m.icon,
-            total_lectures: m.totalLectures,
-            completed_lectures: m.completedLectures,
-            status: m.status,
-            color: m.color,
-            description: m.description,
-            estimated_completion_date: m.estimatedCompletionDate,
-          }))
-        );
-      }
-
-      if (updatedLectures.length > 0) {
-        await supabase.from('lectures').upsert(
-          updatedLectures.map(l => ({
-            id: l.id,
-            user_id: userId,
-            module_id: l.moduleId,
-            name: l.name,
-            difficulty: l.difficulty,
-            topic_category: l.topicCategory,
-            study_date: l.studyDate,
-            studied: l.studied,
-            solved: l.solved,
-            in_active_recall: l.inActiveRecall,
-            notes: l.notes,
-          }))
-        );
-      }
-
-      if (updatedRecall.length > 0) {
-        await supabase.from('active_recall').upsert(
-          updatedRecall.map(ar => ({
-            id: ar.id,
-            user_id: userId,
-            lecture_id: ar.lectureId,
-            lecture_name: ar.lectureName,
-            module_name: ar.moduleName,
-            date_studied: ar.dateStudied,
-            days_since_study: ar.daysSinceStudy,
-            scheduled_review_date: ar.scheduledReviewDate,
-            reviewed: ar.reviewed,
-            reviewed_date: ar.reviewedDate,
-            notes: ar.notes,
-          }))
-        );
-      }
-
-      if (updatedResults.length > 0) {
-        await supabase.from('results').upsert(
-          updatedResults.map(r => ({
-            id: r.id,
-            user_id: userId,
-            academic_year: r.academicYear,
-            module_name: r.moduleName,
-            percentage: r.percentage,
-            notes: r.notes,
-            date_logged: r.dateLogged,
-            ai_conclusion: r.aiConclusion,
-          }))
-        );
-      }
-
-      await supabase.from('lifestyle').upsert({
-        id: updatedLifestyle.id || ('ls-' + userId),
-        user_id: userId,
-        date: updatedLifestyle.date,
-        sleep_time: updatedLifestyle.sleepTime,
-        wake_up_time: updatedLifestyle.wakeUpTime,
-        sleep_hours: updatedLifestyle.sleepHours,
-        exercise_mins: updatedLifestyle.exerciseMins,
-        water_intake_liters: updatedLifestyle.waterIntakeLiters,
-        phone_usage_hours: updatedLifestyle.phoneUsageHours,
-        study_hours: updatedLifestyle.studyHours,
-        caffeine_cups: updatedLifestyle.caffeineCups,
-        bad_habits: updatedLifestyle.badHabits,
-        habits_to_quit: updatedLifestyle.habitsToQuit,
-        stress_level: updatedLifestyle.stressLevel,
-        mood: updatedLifestyle.mood,
-        updated_at: new Date().toISOString(),
+        }),
       });
     } catch (err) {
-      console.error('Error syncing workspace to Supabase:', err);
+      console.error('Error syncing workspace to server API:', err);
+    }
+
+    // 2. Sync to Supabase Auth Cloud User Metadata & Tables if Supabase configured
+    if (isSupabaseConfigured()) {
+      try {
+        await supabase.auth.updateUser({
+          data: {
+            full_name: updatedProfile.name,
+            profile: updatedProfile,
+            modules: updatedModules,
+            lectures: updatedLectures,
+            activeRecallList: updatedRecall,
+            academicResults: updatedResults,
+            lifestyle: updatedLifestyle,
+          },
+        });
+
+        await supabase.from('profiles').upsert({
+          id: userId,
+          name: updatedProfile.name,
+          email: updatedProfile.email,
+          avatar_url: updatedProfile.avatarUrl,
+          university: updatedProfile.university,
+          faculty: updatedProfile.faculty,
+          academic_year: updatedProfile.academicYear,
+          study_system: updatedProfile.studySystem,
+          role: updatedProfile.role,
+          language: updatedProfile.language,
+          theme: updatedProfile.theme,
+          updated_at: new Date().toISOString(),
+        });
+
+        if (updatedModules.length > 0) {
+          await supabase.from('modules').upsert(
+            updatedModules.map(m => ({
+              id: m.id,
+              user_id: userId,
+              name: m.name,
+              icon: m.icon,
+              total_lectures: m.totalLectures,
+              completed_lectures: m.completedLectures,
+              status: m.status,
+              color: m.color,
+              description: m.description,
+              estimated_completion_date: m.estimatedCompletionDate,
+            }))
+          );
+        }
+
+        if (updatedLectures.length > 0) {
+          await supabase.from('lectures').upsert(
+            updatedLectures.map(l => ({
+              id: l.id,
+              user_id: userId,
+              module_id: l.moduleId,
+              name: l.name,
+              difficulty: l.difficulty,
+              topic_category: l.topicCategory,
+              study_date: l.studyDate,
+              studied: l.studied,
+              solved: l.solved,
+              in_active_recall: l.inActiveRecall,
+              notes: l.notes,
+            }))
+          );
+        }
+
+        if (updatedRecall.length > 0) {
+          await supabase.from('active_recall').upsert(
+            updatedRecall.map(ar => ({
+              id: ar.id,
+              user_id: userId,
+              lecture_id: ar.lectureId,
+              lecture_name: ar.lectureName,
+              module_name: ar.moduleName,
+              date_studied: ar.dateStudied,
+              days_since_study: ar.daysSinceStudy,
+              scheduled_review_date: ar.scheduledReviewDate,
+              reviewed: ar.reviewed,
+              reviewed_date: ar.reviewedDate,
+              notes: ar.notes,
+            }))
+          );
+        }
+
+        if (updatedResults.length > 0) {
+          await supabase.from('results').upsert(
+            updatedResults.map(r => ({
+              id: r.id,
+              user_id: userId,
+              academic_year: r.academicYear,
+              module_name: r.moduleName,
+              percentage: r.percentage,
+              notes: r.notes,
+              date_logged: r.dateLogged,
+              ai_conclusion: r.aiConclusion,
+            }))
+          );
+        }
+
+        await supabase.from('lifestyle').upsert({
+          id: updatedLifestyle.id || ('ls-' + userId),
+          user_id: userId,
+          date: updatedLifestyle.date,
+          sleep_time: updatedLifestyle.sleepTime,
+          wake_up_time: updatedLifestyle.wakeUpTime,
+          sleep_hours: updatedLifestyle.sleepHours,
+          exercise_mins: updatedLifestyle.exerciseMins,
+          water_intake_liters: updatedLifestyle.waterIntakeLiters,
+          phone_usage_hours: updatedLifestyle.phoneUsageHours,
+          study_hours: updatedLifestyle.studyHours,
+          caffeine_cups: updatedLifestyle.caffeineCups,
+          bad_habits: updatedLifestyle.badHabits,
+          habits_to_quit: updatedLifestyle.habitsToQuit,
+          stress_level: updatedLifestyle.stressLevel,
+          mood: updatedLifestyle.mood,
+          updated_at: new Date().toISOString(),
+        });
+      } catch (err) {
+        console.warn('Supabase sync warning:', err);
+      }
     }
   };
 
-  // Initial Supabase Session Check and Auth State Listener
+  // Initial Auth Session Check
   useEffect(() => {
     let mounted = true;
 
     async function initAuthSession() {
       try {
-        if (isSupabaseConfigured()) {
-          const { data: { session } } = await supabase.auth.getSession();
-          if (mounted) {
-            if (session?.user) {
+        const storedSession = localStorage.getItem('medtrack_active_session');
+        if (storedSession) {
+          try {
+            const { userId, email, name } = JSON.parse(storedSession);
+            if (userId && mounted) {
+              await loadWorkspaceFromSupabase(userId, email, name);
               setIsAuthenticated(true);
-              await loadWorkspaceFromSupabase(
-                session.user.id,
-                session.user.email,
-                session.user.user_metadata?.full_name
-              );
-            } else {
-              setIsAuthenticated(false);
-              clearWorkspaceState();
+              return;
             }
+          } catch (e) {
+            console.warn('Error reading stored session:', e);
           }
         }
+
+        if (isSupabaseConfigured()) {
+          const { data: { session } } = await supabase.auth.getSession();
+          if (mounted && session?.user) {
+            setIsAuthenticated(true);
+            await loadWorkspaceFromSupabase(
+              session.user.id,
+              session.user.email,
+              session.user.user_metadata?.full_name
+            );
+            return;
+          }
+        }
+
+        if (mounted) {
+          setIsAuthenticated(false);
+          clearWorkspaceState();
+        }
       } catch (err) {
-        console.error('Error initializing Supabase auth session:', err);
+        console.error('Error initializing auth session:', err);
       } finally {
         if (mounted) setAuthLoading(false);
       }
@@ -499,32 +567,30 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const login = async (email: string, password?: string): Promise<boolean> => {
     setAuthError(null);
     try {
-      if (isSupabaseConfigured() && password) {
-        const { error, data } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-        });
+      // 1. Authenticate with server API database
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
 
-        if (error) {
-          setAuthError(error.message);
-          return false;
-        }
-
-        if (data.user) {
-          const fullName = data.user.user_metadata?.full_name || email.split('@')[0];
-          await loadWorkspaceFromSupabase(data.user.id, data.user.email || email, fullName);
-          setIsAuthenticated(true);
-          return true;
-        }
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setAuthError(data.error || 'Invalid credentials.');
+        return false;
       }
 
-      // Dev fallback authentication when Supabase password is missing
-      const localUserId = 'usr_' + btoa(email).replace(/=/g, '').toLowerCase();
-      await loadWorkspaceFromSupabase(localUserId, email, email.split('@')[0]);
+      // 2. Also authenticate with Supabase in background if configured and password provided
+      if (isSupabaseConfigured() && password) {
+        supabase.auth.signInWithPassword({ email, password }).catch((e) => console.warn('Supabase signin background notice:', e));
+      }
+
+      const userObj = data.user;
+      await loadWorkspaceFromSupabase(userObj.id, userObj.email, userObj.fullName);
       setIsAuthenticated(true);
       return true;
     } catch (err: any) {
-      setAuthError(err.message || 'Failed to sign in. Please check your credentials.');
+      setAuthError(err.message || 'Failed to sign in. Please check your network connection.');
       return false;
     }
   };
@@ -532,31 +598,30 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const register = async (fullName: string, email: string, password: string): Promise<boolean> => {
     setAuthError(null);
     try {
-      if (isSupabaseConfigured()) {
-        const { data, error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            data: {
-              full_name: fullName,
-            },
-          },
-        });
+      // 1. Register with server API database
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fullName, email, password }),
+      });
 
-        if (error) {
-          setAuthError(error.message);
-          return false;
-        }
-
-        if (data.user) {
-          await loadWorkspaceFromSupabase(data.user.id, data.user.email || email, fullName);
-          setIsAuthenticated(true);
-          return true;
-        }
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setAuthError(data.error || 'Registration failed.');
+        return false;
       }
 
-      const localUserId = 'usr_' + btoa(email).replace(/=/g, '').toLowerCase();
-      await loadWorkspaceFromSupabase(localUserId, email, fullName);
+      // 2. Also attempt Supabase signup in background if configured
+      if (isSupabaseConfigured()) {
+        supabase.auth.signUp({
+          email,
+          password,
+          options: { data: { full_name: fullName } },
+        }).catch((e) => console.warn('Supabase signup background notice:', e));
+      }
+
+      const userObj = data.user;
+      await loadWorkspaceFromSupabase(userObj.id, userObj.email, userObj.fullName);
       setIsAuthenticated(true);
       return true;
     } catch (err: any) {
@@ -586,8 +651,9 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const logout = async () => {
     try {
+      localStorage.removeItem('medtrack_active_session');
       if (isSupabaseConfigured()) {
-        await supabase.auth.signOut();
+        await supabase.auth.signOut().catch(() => {});
       }
     } catch (err) {
       console.error('Logout error:', err);
