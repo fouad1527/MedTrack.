@@ -87,7 +87,10 @@ export const ModulesView: React.FC = () => {
 
     const totalLecsNum = typeof newTotalLectures === 'number' && newTotalLectures > 0 ? newTotalLectures : 30;
 
+    const newModuleId = 'mod-' + Date.now();
+
     addModule({
+      id: newModuleId,
       name: newModName.trim(),
       icon: 'layers',
       totalLectures: totalLecsNum,
@@ -95,8 +98,10 @@ export const ModulesView: React.FC = () => {
       color: newModColor,
       description: newModDesc.trim() || 'Medical Curriculum Block',
       estimatedCompletionDate: 'TBD',
+      completedLectures: 0,
     });
 
+    setSelectedModuleId(newModuleId);
     setNewModName('');
     setNewTotalLectures(42);
     setNewModDesc('');
@@ -165,74 +170,95 @@ export const ModulesView: React.FC = () => {
       </div>
 
       {/* MODULE CARDS GRID */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
-        {modules.map((m) => {
-          const isSelected = selectedModule && m.id === selectedModule.id;
-          const totalLecs = m.totalLectures || 1;
-          const completedLecs = m.completedLectures || 0;
-          const pct = Math.min(100, Math.round((completedLecs / totalLecs) * 100));
-          const rem = Math.max(0, totalLecs - completedLecs);
+      {modules.length === 0 ? (
+        <div className="bg-white dark:bg-[#121214] border border-zinc-200 dark:border-zinc-800 rounded-3xl p-8 sm:p-12 text-center space-y-4 shadow-sm">
+          <div className="w-16 h-16 bg-indigo-500/10 text-indigo-500 rounded-2xl flex items-center justify-center mx-auto">
+            <BookOpen className="w-8 h-8" />
+          </div>
+          <div className="max-w-md mx-auto space-y-2">
+            <h3 className="text-xl font-bold text-zinc-900 dark:text-white">No Medical Modules Found</h3>
+            <p className="text-xs text-zinc-500 leading-relaxed">
+              Your workspace is currently empty. Add your medical school modules (e.g., Cardiology, Pharmacology, Anatomy) to start adding lectures and tracking study progress.
+            </p>
+          </div>
+          <button
+            onClick={() => setShowAddModuleModal(true)}
+            className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-md transition-all inline-flex items-center gap-2 cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Create Your First Module</span>
+          </button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+          {modules.map((m) => {
+            const isSelected = selectedModule && m.id === selectedModule.id;
+            const totalLecs = m.totalLectures || 1;
+            const completedLecs = m.completedLectures || 0;
+            const pct = Math.min(100, Math.round((completedLecs / totalLecs) * 100));
+            const rem = Math.max(0, totalLecs - completedLecs);
 
-          return (
-            <div
-              key={m.id}
-              onClick={() => setSelectedModuleId(m.id)}
-              className={`
-                p-5 rounded-3xl cursor-pointer transition-all duration-200 border relative group flex flex-col justify-between shadow-sm
-                ${isSelected 
-                  ? 'bg-white dark:bg-[#121214] border-indigo-500 ring-2 ring-indigo-500/30' 
-                  : 'bg-white dark:bg-[#121214]/60 border-zinc-200/80 dark:border-zinc-800 hover:border-zinc-300 dark:hover:border-zinc-700'
-                }
-              `}
-            >
-              <div className="flex items-start justify-between mb-3">
-                <div className="p-2.5 rounded-2xl bg-zinc-100 dark:bg-zinc-800/80 border border-zinc-200/50 dark:border-zinc-700/50">
-                  {renderModuleIcon(m.icon)}
-                </div>
-                <span className={`
-                  text-[10px] font-mono px-2 py-0.5 rounded-full font-bold
-                  ${m.status === 'ACTIVE' ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20' : ''}
-                  ${m.status === 'OPEN' ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20' : ''}
-                  ${m.status === 'COMPLETED' ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20' : ''}
-                  ${m.status === 'UPCOMING' ? 'bg-zinc-200 dark:bg-zinc-800 text-zinc-500' : ''}
-                `}>
-                  {m.status}
-                </span>
-              </div>
-
-              <div>
-                <h4 className="font-bold text-sm text-zinc-900 dark:text-white truncate">{m.name}</h4>
-                <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1 line-clamp-1">
-                  {m.description || 'Medical curriculum module'}
-                </p>
-              </div>
-
-              {/* Module Progress Section */}
-              <div className="mt-4 pt-3 border-t border-zinc-100 dark:border-zinc-800/80 space-y-2">
-                <div className="flex justify-between items-center text-[11px]">
-                  <span className="font-mono font-bold text-zinc-700 dark:text-zinc-300">
-                    Completed Lectures: <strong className="text-zinc-900 dark:text-white">{completedLecs} / {totalLecs}</strong>
+            return (
+              <div
+                key={m.id}
+                onClick={() => setSelectedModuleId(m.id)}
+                className={`
+                  p-5 rounded-3xl cursor-pointer transition-all duration-200 border relative group flex flex-col justify-between shadow-sm
+                  ${isSelected 
+                    ? 'bg-white dark:bg-[#121214] border-indigo-500 ring-2 ring-indigo-500/30' 
+                    : 'bg-white dark:bg-[#121214]/60 border-zinc-200/80 dark:border-zinc-800 hover:border-zinc-300 dark:hover:border-zinc-700'
+                  }
+                `}
+              >
+                <div className="flex items-start justify-between mb-3">
+                  <div className="p-2.5 rounded-2xl bg-zinc-100 dark:bg-zinc-800/80 border border-zinc-200/50 dark:border-zinc-700/50">
+                    {renderModuleIcon(m.icon)}
+                  </div>
+                  <span className={`
+                    text-[10px] font-mono px-2 py-0.5 rounded-full font-bold
+                    ${m.status === 'ACTIVE' ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20' : ''}
+                    ${m.status === 'OPEN' ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20' : ''}
+                    ${m.status === 'COMPLETED' ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20' : ''}
+                    ${m.status === 'UPCOMING' ? 'bg-zinc-200 dark:bg-zinc-800 text-zinc-500' : ''}
+                  `}>
+                    {m.status}
                   </span>
-                  <span className="font-mono font-extrabold text-indigo-600 dark:text-indigo-400">{pct}%</span>
                 </div>
 
-                {/* Animated Progress Bar */}
-                <div className="w-full h-2 bg-zinc-100 dark:bg-zinc-800/90 rounded-full overflow-hidden p-0.5 border border-zinc-200/40 dark:border-zinc-700/40">
-                  <div 
-                    className="h-full rounded-full transition-all duration-500 ease-out shadow-sm"
-                    style={{ width: `${pct}%`, backgroundColor: m.color || '#6366F1' }}
-                  />
+                <div>
+                  <h4 className="font-bold text-sm text-zinc-900 dark:text-white truncate">{m.name}</h4>
+                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1 line-clamp-1">
+                    {m.description || 'Medical curriculum module'}
+                  </p>
                 </div>
 
-                <div className="flex justify-between items-center text-[10px] text-zinc-500 dark:text-zinc-400 font-mono">
-                  <span>{rem} remaining</span>
-                  <span>{pct === 100 ? '🎉 Module Finished!' : `${pct}% completed`}</span>
+                {/* Module Progress Section */}
+                <div className="mt-4 pt-3 border-t border-zinc-100 dark:border-zinc-800/80 space-y-2">
+                  <div className="flex justify-between items-center text-[11px]">
+                    <span className="font-mono font-bold text-zinc-700 dark:text-zinc-300">
+                      Completed Lectures: <strong className="text-zinc-900 dark:text-white">{completedLecs} / {totalLecs}</strong>
+                    </span>
+                    <span className="font-mono font-extrabold text-indigo-600 dark:text-indigo-400">{pct}%</span>
+                  </div>
+
+                  {/* Animated Progress Bar */}
+                  <div className="w-full h-2 bg-zinc-100 dark:bg-zinc-800/90 rounded-full overflow-hidden p-0.5 border border-zinc-200/40 dark:border-zinc-700/40">
+                    <div 
+                      className="h-full rounded-full transition-all duration-500 ease-out shadow-sm"
+                      style={{ width: `${pct}%`, backgroundColor: m.color || '#6366F1' }}
+                    />
+                  </div>
+
+                  <div className="flex justify-between items-center text-[10px] text-zinc-500 dark:text-zinc-400 font-mono">
+                    <span>{rem} remaining</span>
+                    <span>{pct === 100 ? '🎉 Module Finished!' : `${pct}% completed`}</span>
+                  </div>
                 </div>
               </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* SELECTED MODULE DETAILED DASHBOARD */}
       {selectedModule && (

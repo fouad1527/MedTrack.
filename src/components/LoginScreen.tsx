@@ -221,7 +221,7 @@ export const LoginScreen: React.FC = () => {
                       required
                       value={fullName}
                       onChange={(e) => setFullName(e.target.value)}
-                      placeholder="e.g. Dr. Sarah Chen"
+                      placeholder="e.g. Medical Student Name"
                       className="w-full pl-10 pr-4 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-500/30 transition-all font-medium"
                     />
                   </div>
@@ -341,20 +341,9 @@ export const LoginScreen: React.FC = () => {
               </button>
             </form>
 
-            {/* DEMO ACCESS & FORGOT PASSWORD BACK LINK */}
-            <div className="mt-6 pt-5 border-t border-slate-800/80 space-y-3">
-              {mode === 'login' && (
-                <button
-                  type="button"
-                  onClick={handleDemoAccess}
-                  className="w-full py-2.5 bg-slate-950/80 hover:bg-slate-950 text-slate-300 hover:text-white font-medium text-xs rounded-xl transition-all border border-slate-800 hover:border-sky-500/40 flex items-center justify-center gap-2 cursor-pointer group transform hover:-translate-y-0.5"
-                >
-                  <Sparkles className="w-3.5 h-3.5 text-sky-400 group-hover:scale-110 transition-transform" />
-                  <span>Explore Demo (Dr. Sarah Chen)</span>
-                </button>
-              )}
-
-              {mode === 'forgot' && (
+            {/* FORGOT PASSWORD BACK LINK */}
+            {mode === 'forgot' && (
+              <div className="mt-6 pt-5 border-t border-slate-800/80">
                 <button
                   type="button"
                   onClick={() => { setMode('login'); setLocalError(null); setResetSent(false); }}
@@ -362,8 +351,8 @@ export const LoginScreen: React.FC = () => {
                 >
                   &larr; Back to Sign In
                 </button>
-              )}
-            </div>
+              </div>
+            )}
           </div>
 
           {/* FOOTER DISCLOSURE */}

@@ -77,49 +77,98 @@ interface MedTrackContextType {
 
 const MedTrackContext = createContext<MedTrackContextType | undefined>(undefined);
 
-const LOCAL_STORAGE_KEY = 'medtrack_app_state_v1';
+const LOCAL_STORAGE_KEY_PREFIX = 'medtrack_user_v2_';
+
+const emptyProfile: UserProfile = {
+  id: '',
+  name: 'Medical Student',
+  email: '',
+  avatarUrl: '',
+  university: '',
+  faculty: '',
+  academicYear: 'Medical Student',
+  studySystem: 'Credit Hours System',
+  role: 'Student',
+  language: 'en',
+  theme: 'light',
+};
+
+const defaultLifestyle: LifestyleEntry = {
+  id: 'ls-default',
+  date: new Date().toISOString().split('T')[0],
+  sleepTime: '23:00',
+  wakeUpTime: '07:00',
+  sleepHours: 7.5,
+  exerciseMins: 30,
+  waterIntakeLiters: 2.5,
+  phoneUsageHours: 2.0,
+  studyHours: 4.0,
+  caffeineCups: 1,
+  badHabits: [],
+  habitsToQuit: [],
+  stressLevel: 3,
+  mood: 'good',
+};
 
 export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    const savedAuth = localStorage.getItem(LOCAL_STORAGE_KEY + '_authenticated');
+    const savedAuth = localStorage.getItem('medtrack_authenticated_session');
     return savedAuth === 'true';
   });
   const [authLoading, setAuthLoading] = useState<boolean>(true);
   const [authError, setAuthError] = useState<string | null>(null);
   
-  // Load from localStorage or default mock data
-  const [user, setUser] = useState<UserProfile>(() => {
-    const saved = localStorage.getItem(LOCAL_STORAGE_KEY + '_user');
-    return saved ? JSON.parse(saved) : initialProfile;
-  });
+  const [user, setUser] = useState<UserProfile>(emptyProfile);
+  const [modules, setModules] = useState<Module[]>([]);
+  const [lectures, setLectures] = useState<Lecture[]>([]);
+  const [activeRecallList, setActiveRecallList] = useState<ActiveRecallItem[]>([]);
+  const [academicResults, setAcademicResults] = useState<AcademicResult[]>([]);
+  const [lifestyle, setLifestyle] = useState<LifestyleEntry>(defaultLifestyle);
+  const [insights, setInsights] = useState<AIInsight[]>([]);
 
-  const [modules, setModules] = useState<Module[]>(() => {
-    const saved = localStorage.getItem(LOCAL_STORAGE_KEY + '_modules');
-    return saved ? JSON.parse(saved) : initialModules;
-  });
+  // Function to load workspace data strictly for a given user ID
+  const loadWorkspaceForUser = (userId: string, email?: string, name?: string) => {
+    if (!userId) return;
 
-  const [lectures, setLectures] = useState<Lecture[]>(() => {
-    const saved = localStorage.getItem(LOCAL_STORAGE_KEY + '_lectures');
-    return saved ? JSON.parse(saved) : initialLectures;
-  });
+    const prefix = `${LOCAL_STORAGE_KEY_PREFIX}${userId}_`;
+    const savedProfile = localStorage.getItem(prefix + 'profile');
+    const savedModules = localStorage.getItem(prefix + 'modules');
+    const savedLectures = localStorage.getItem(prefix + 'lectures');
+    const savedRecall = localStorage.getItem(prefix + 'activeRecall');
+    const savedResults = localStorage.getItem(prefix + 'results');
+    const savedLifestyle = localStorage.getItem(prefix + 'lifestyle');
 
-  const [activeRecallList, setActiveRecallList] = useState<ActiveRecallItem[]>(() => {
-    const saved = localStorage.getItem(LOCAL_STORAGE_KEY + '_activeRecall');
-    return saved ? JSON.parse(saved) : initialActiveRecall;
-  });
+    const parsedProfile: UserProfile = savedProfile ? JSON.parse(savedProfile) : {
+      ...emptyProfile,
+      id: userId,
+      email: email || '',
+      name: name || (email ? email.split('@')[0] : 'Medical Student'),
+    };
 
-  const [academicResults, setAcademicResults] = useState<AcademicResult[]>(() => {
-    const saved = localStorage.getItem(LOCAL_STORAGE_KEY + '_results');
-    return saved ? JSON.parse(saved) : initialAcademicResults;
-  });
+    // Ensure profile always has latest auth ID and name if provided
+    if (userId) parsedProfile.id = userId;
+    if (email) parsedProfile.email = email;
+    if (name && parsedProfile.name === 'Medical Student') parsedProfile.name = name;
 
-  const [lifestyle, setLifestyle] = useState<LifestyleEntry>(() => {
-    const saved = localStorage.getItem(LOCAL_STORAGE_KEY + '_lifestyle');
-    return saved ? JSON.parse(saved) : initialLifestyleEntry;
-  });
+    setUser(parsedProfile);
+    setModules(savedModules ? JSON.parse(savedModules) : []);
+    setLectures(savedLectures ? JSON.parse(savedLectures) : []);
+    setActiveRecallList(savedRecall ? JSON.parse(savedRecall) : []);
+    setAcademicResults(savedResults ? JSON.parse(savedResults) : []);
+    setLifestyle(savedLifestyle ? JSON.parse(savedLifestyle) : defaultLifestyle);
+  };
 
-  const [insights, setInsights] = useState<AIInsight[]>(initialInsights);
+  // Function to clear memory state
+  const clearWorkspaceState = () => {
+    setUser(emptyProfile);
+    setModules([]);
+    setLectures([]);
+    setActiveRecallList([]);
+    setAcademicResults([]);
+    setLifestyle(defaultLifestyle);
+    setInsights([]);
+  };
 
   // Supabase Auth Listener & Initial Session Check
   useEffect(() => {
@@ -132,15 +181,23 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           if (mounted) {
             if (session?.user) {
               setIsAuthenticated(true);
-              localStorage.setItem(LOCAL_STORAGE_KEY + '_authenticated', 'true');
-              const fullName = session.user.user_metadata?.full_name || user.name;
-              setUser(prev => ({
-                ...prev,
-                id: session.user.id,
-                email: session.user.email || prev.email,
-                name: fullName,
-              }));
+              localStorage.setItem('medtrack_authenticated_session', 'true');
+              loadWorkspaceForUser(
+                session.user.id,
+                session.user.email,
+                session.user.user_metadata?.full_name
+              );
+            } else {
+              setIsAuthenticated(false);
+              localStorage.setItem('medtrack_authenticated_session', 'false');
+              clearWorkspaceState();
             }
+          }
+        } else {
+          // If Supabase not configured but local saved session exists
+          const savedUserId = localStorage.getItem('medtrack_active_user_id');
+          if (savedUserId && isAuthenticated) {
+            loadWorkspaceForUser(savedUserId);
           }
         }
       } catch (err) {
@@ -155,19 +212,20 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     let authSubscription: { unsubscribe: () => void } | null = null;
     if (isSupabaseConfigured()) {
       const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-        if (event === 'SIGNED_IN' && session?.user) {
+        if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION') && session?.user) {
           setIsAuthenticated(true);
-          localStorage.setItem(LOCAL_STORAGE_KEY + '_authenticated', 'true');
-          const fullName = session.user.user_metadata?.full_name || user.name;
-          setUser(prev => ({
-            ...prev,
-            id: session.user.id,
-            email: session.user.email || prev.email,
-            name: fullName,
-          }));
+          localStorage.setItem('medtrack_authenticated_session', 'true');
+          localStorage.setItem('medtrack_active_user_id', session.user.id);
+          loadWorkspaceForUser(
+            session.user.id,
+            session.user.email,
+            session.user.user_metadata?.full_name
+          );
         } else if (event === 'SIGNED_OUT') {
           setIsAuthenticated(false);
-          localStorage.setItem(LOCAL_STORAGE_KEY + '_authenticated', 'false');
+          localStorage.setItem('medtrack_authenticated_session', 'false');
+          localStorage.removeItem('medtrack_active_user_id');
+          clearWorkspaceState();
         }
       });
       authSubscription = subscription;
@@ -200,30 +258,42 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   }, [user.theme]);
 
-  // Save changes to localStorage
+  // Save changes to user-scoped storage
   useEffect(() => {
-    localStorage.setItem(LOCAL_STORAGE_KEY + '_user', JSON.stringify(user));
+    if (!user.id) return;
+    const prefix = `${LOCAL_STORAGE_KEY_PREFIX}${user.id}_`;
+    localStorage.setItem(prefix + 'profile', JSON.stringify(user));
   }, [user]);
 
   useEffect(() => {
-    localStorage.setItem(LOCAL_STORAGE_KEY + '_modules', JSON.stringify(modules));
-  }, [modules]);
+    if (!user.id) return;
+    const prefix = `${LOCAL_STORAGE_KEY_PREFIX}${user.id}_`;
+    localStorage.setItem(prefix + 'modules', JSON.stringify(modules));
+  }, [modules, user.id]);
 
   useEffect(() => {
-    localStorage.setItem(LOCAL_STORAGE_KEY + '_lectures', JSON.stringify(lectures));
-  }, [lectures]);
+    if (!user.id) return;
+    const prefix = `${LOCAL_STORAGE_KEY_PREFIX}${user.id}_`;
+    localStorage.setItem(prefix + 'lectures', JSON.stringify(lectures));
+  }, [lectures, user.id]);
 
   useEffect(() => {
-    localStorage.setItem(LOCAL_STORAGE_KEY + '_activeRecall', JSON.stringify(activeRecallList));
-  }, [activeRecallList]);
+    if (!user.id) return;
+    const prefix = `${LOCAL_STORAGE_KEY_PREFIX}${user.id}_`;
+    localStorage.setItem(prefix + 'activeRecall', JSON.stringify(activeRecallList));
+  }, [activeRecallList, user.id]);
 
   useEffect(() => {
-    localStorage.setItem(LOCAL_STORAGE_KEY + '_results', JSON.stringify(academicResults));
-  }, [academicResults]);
+    if (!user.id) return;
+    const prefix = `${LOCAL_STORAGE_KEY_PREFIX}${user.id}_`;
+    localStorage.setItem(prefix + 'results', JSON.stringify(academicResults));
+  }, [academicResults, user.id]);
 
   useEffect(() => {
-    localStorage.setItem(LOCAL_STORAGE_KEY + '_lifestyle', JSON.stringify(lifestyle));
-  }, [lifestyle]);
+    if (!user.id) return;
+    const prefix = `${LOCAL_STORAGE_KEY_PREFIX}${user.id}_`;
+    localStorage.setItem(prefix + 'lifestyle', JSON.stringify(lifestyle));
+  }, [lifestyle, user.id]);
 
   // Auth functions
   const login = async (email: string, password?: string): Promise<boolean> => {
@@ -241,18 +311,21 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
 
         if (data.user) {
-          const fullName = data.user.user_metadata?.full_name || user.name;
-          setUser(prev => ({ ...prev, id: data.user.id, email: data.user.email || email, name: fullName }));
+          const fullName = data.user.user_metadata?.full_name || email.split('@')[0];
+          loadWorkspaceForUser(data.user.id, data.user.email || email, fullName);
           setIsAuthenticated(true);
-          localStorage.setItem(LOCAL_STORAGE_KEY + '_authenticated', 'true');
+          localStorage.setItem('medtrack_authenticated_session', 'true');
+          localStorage.setItem('medtrack_active_user_id', data.user.id);
           return true;
         }
       }
 
-      // Fallback local / demo authentication
-      setUser(prev => ({ ...prev, email }));
+      // Fallback local authentication
+      const localUserId = 'usr_' + btoa(email).replace(/=/g, '').toLowerCase();
+      loadWorkspaceForUser(localUserId, email, email.split('@')[0]);
       setIsAuthenticated(true);
-      localStorage.setItem(LOCAL_STORAGE_KEY + '_authenticated', 'true');
+      localStorage.setItem('medtrack_authenticated_session', 'true');
+      localStorage.setItem('medtrack_active_user_id', localUserId);
       return true;
     } catch (err: any) {
       setAuthError(err.message || 'Failed to sign in. Please check your credentials.');
@@ -280,26 +353,20 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
 
         if (data.user) {
-          setUser(prev => ({
-            ...prev,
-            id: data.user.id,
-            email: data.user.email || email,
-            name: fullName,
-          }));
+          loadWorkspaceForUser(data.user.id, data.user.email || email, fullName);
           setIsAuthenticated(true);
-          localStorage.setItem(LOCAL_STORAGE_KEY + '_authenticated', 'true');
+          localStorage.setItem('medtrack_authenticated_session', 'true');
+          localStorage.setItem('medtrack_active_user_id', data.user.id);
           return true;
         }
       }
 
       // Local registration fallback
-      setUser(prev => ({
-        ...prev,
-        name: fullName,
-        email,
-      }));
+      const localUserId = 'usr_' + btoa(email).replace(/=/g, '').toLowerCase();
+      loadWorkspaceForUser(localUserId, email, fullName);
       setIsAuthenticated(true);
-      localStorage.setItem(LOCAL_STORAGE_KEY + '_authenticated', 'true');
+      localStorage.setItem('medtrack_authenticated_session', 'true');
+      localStorage.setItem('medtrack_active_user_id', localUserId);
       return true;
     } catch (err: any) {
       setAuthError(err.message || 'Registration failed. Please try again.');
@@ -336,7 +403,9 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       console.error('Logout error:', err);
     } finally {
       setIsAuthenticated(false);
-      localStorage.setItem(LOCAL_STORAGE_KEY + '_authenticated', 'false');
+      localStorage.setItem('medtrack_authenticated_session', 'false');
+      localStorage.removeItem('medtrack_active_user_id');
+      clearWorkspaceState();
       setActiveTab('dashboard');
     }
   };
@@ -624,55 +693,47 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   // Studied + Solved = 70% of the lecture score.
   // Weekly Review completed = remaining 30%.
   const computeJourneyMetrics = (): MedicalJourneyMetrics => {
-    const totalLecCount = lectures.length || 1;
+    const totalLecCount = lectures.length;
     const studiedLecCount = lectures.filter(l => l.studied).length;
     const solvedLecCount = lectures.filter(l => l.solved).length;
 
     const moduleCompPct = modules.length 
       ? Math.round(modules.reduce((acc, m) => acc + (m.totalLectures ? (m.completedLectures / m.totalLectures) : 0), 0) / modules.length * 100)
-      : 50;
+      : 0;
 
-    const lectureCompPct = Math.min(100, Math.round((studiedLecCount / totalLecCount) * 100));
-    const questionSolvingPct = Math.min(100, Math.round((solvedLecCount / totalLecCount) * 100));
+    const lectureCompPct = totalLecCount ? Math.min(100, Math.round((studiedLecCount / totalLecCount) * 100)) : 0;
+    const questionSolvingPct = totalLecCount ? Math.min(100, Math.round((solvedLecCount / totalLecCount) * 100)) : 0;
 
     const todayStr = new Date().toISOString().split('T')[0];
 
     // Evaluate lecture-by-lecture scores for the 70% + 30% journey score:
     let totalLecturePoints = 0;
     
-    lectures.forEach(lec => {
-      let lecPoints = 0;
-      const isStudiedAndSolved = lec.studied && lec.solved;
+    if (totalLecCount > 0) {
+      lectures.forEach(lec => {
+        let lecPoints = 0;
+        const isStudiedAndSolved = lec.studied && lec.solved;
 
-      if (isStudiedAndSolved) {
-        // Base 70% earned for completing both Studied + Solved
-        lecPoints += 70;
-
-        // Check Weekly Review status
-        const reviewItem = activeRecallList.find(ar => ar.lectureId === lec.id);
-        if (reviewItem) {
-          if (reviewItem.reviewed) {
-            // Completed weekly review -> remaining 30%
-            lecPoints += 30;
-          } else if (reviewItem.scheduledReviewDate > todayStr) {
-            // Scheduled for future -> student is on track, count as full 100%
-            lecPoints += 30;
+        if (isStudiedAndSolved) {
+          lecPoints += 70;
+          const reviewItem = activeRecallList.find(ar => ar.lectureId === lec.id);
+          if (reviewItem) {
+            if (reviewItem.reviewed || reviewItem.scheduledReviewDate > todayStr) {
+              lecPoints += 30;
+            }
           } else {
-            // Review date has arrived or passed, but not reviewed yet -> only 70%
-            lecPoints += 0;
+            lecPoints += 30;
           }
         } else {
-          lecPoints += 30;
+          if (lec.studied) lecPoints += 35;
+          if (lec.solved) lecPoints += 35;
         }
-      } else {
-        if (lec.studied) lecPoints += 35;
-        if (lec.solved) lecPoints += 35;
-      }
 
-      totalLecturePoints += lecPoints;
-    });
+        totalLecturePoints += lecPoints;
+      });
+    }
 
-    const journeyScore = Math.min(100, Math.max(0, Math.round(totalLecturePoints / totalLecCount)));
+    const journeyScore = totalLecCount > 0 ? Math.min(100, Math.max(0, Math.round(totalLecturePoints / totalLecCount))) : 0;
 
     // Weekly review specific counts
     const eligibleReviews = activeRecallList;
@@ -681,11 +742,11 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     const weeklyReviewCompPct = eligibleReviews.length > 0
       ? Math.round((completedReviews.length / eligibleReviews.length) * 100)
-      : 100;
+      : 0;
 
     return {
       journeyScore,
-      scoreTrend: 2.4,
+      scoreTrend: totalLecCount > 0 ? 2.4 : 0,
       moduleCompletionRate: moduleCompPct,
       lectureCompletionRate: lectureCompPct,
       questionSolvingRate: questionSolvingPct,
@@ -694,19 +755,28 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       completedWeeklyReviewsCount: completedReviews.length,
       totalEligibleReviewsCount: eligibleReviews.length,
       solvedQuestionsTotal: solvedLecCount * 25,
-      studyConsistencyPercentage: Math.min(100, Math.round(journeyScore * 0.95)),
+      studyConsistencyPercentage: totalLecCount > 0 ? Math.min(100, Math.round(journeyScore * 0.95)) : 0,
     };
   };
 
   const journeyMetrics = computeJourneyMetrics();
 
   // Academic Prediction Model
+  const hasData = lectures.length > 0 || academicResults.length > 0;
+  const avgResult = academicResults.length 
+    ? Math.round(academicResults.reduce((sum, r) => sum + r.percentage, 0) / academicResults.length)
+    : 0;
+
+  const predictedScore = hasData 
+    ? (academicResults.length ? Math.round(avgResult * 0.7 + journeyMetrics.journeyScore * 0.3) : Math.round(journeyMetrics.journeyScore * 0.92 + 10))
+    : 0;
+
   const prediction: AcademicPrediction = {
-    predictedExamScore: Math.round(journeyMetrics.journeyScore * 0.92 + 10),
-    predictedGrade: journeyMetrics.journeyScore >= 88 ? 'A+' : journeyMetrics.journeyScore >= 82 ? 'A' : journeyMetrics.journeyScore >= 75 ? 'B+' : 'B',
-    confidenceLevel: 92,
-    examReadiness: journeyMetrics.journeyScore >= 80 ? 'High' : 'Moderate',
-    targetGradeOrScore: 'A+ (90%+)',
+    predictedExamScore: predictedScore,
+    predictedGrade: !hasData ? 'N/A' : predictedScore >= 88 ? 'A+' : predictedScore >= 82 ? 'A' : predictedScore >= 75 ? 'B+' : 'B',
+    confidenceLevel: hasData ? 90 : 0,
+    examReadiness: !hasData ? 'Low' : predictedScore >= 80 ? 'High' : 'Moderate',
+    targetGradeOrScore: hasData ? 'A+ (90%+)' : 'No Data Yet',
   };
 
   // Export & Reset
@@ -730,13 +800,16 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   };
 
   const resetDemoData = () => {
-    setUser(initialProfile);
-    setModules(initialModules);
-    setLectures(initialLectures);
-    setActiveRecallList(initialActiveRecall);
-    setAcademicResults(initialAcademicResults);
-    setLifestyle(initialLifestyleEntry);
-    localStorage.clear();
+    if (user.id) {
+      const prefix = `${LOCAL_STORAGE_KEY_PREFIX}${user.id}_`;
+      localStorage.removeItem(prefix + 'profile');
+      localStorage.removeItem(prefix + 'modules');
+      localStorage.removeItem(prefix + 'lectures');
+      localStorage.removeItem(prefix + 'activeRecall');
+      localStorage.removeItem(prefix + 'results');
+      localStorage.removeItem(prefix + 'lifestyle');
+    }
+    clearWorkspaceState();
   };
 
   return (

@@ -48,29 +48,16 @@ export const DashboardView: React.FC = () => {
   const missionCompletedCount = (task1Done ? 1 : 0) + (task2Done ? 1 : 0) + (task3Done ? 1 : 0);
   const isMissionAllComplete = missionCompletedCount === 3;
 
-  const handleRefreshAi = async () => {
+  const handleRefreshAi = () => {
     setLoadingAi(true);
-    try {
-      const res = await fetch('/api/ai/insights', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          modulesCount: modules.length,
-          completedLectures: journeyMetrics.lectureCompletionRate,
-          solvedQuestions: journeyMetrics.solvedQuestionsTotal,
-          retentionScore: journeyMetrics.retentionScore,
-          journeyScore: journeyMetrics.journeyScore,
-        }),
-      });
-      const data = await res.json();
-      if (data.insight) {
-        setCustomInsight(data.insight);
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
+    setTimeout(() => {
       setLoadingAi(false);
-    }
+      if (modules.length === 0) {
+        setCustomInsight('Create your first module and log studied lectures to begin generating personalized medical journey analytics.');
+      } else {
+        setCustomInsight(`Current study consistency is at ${journeyMetrics.journeyScore}%. Recommended focus: solve practice questions for studied lectures.`);
+      }
+    }, 400);
   };
 
   return (
@@ -334,7 +321,16 @@ export const DashboardView: React.FC = () => {
                 </p>
               </div>
             ) : (
-              <p className="text-xs text-zinc-400">No active module</p>
+              <div className="py-2 space-y-2">
+                <p className="text-xs font-bold text-zinc-700 dark:text-zinc-300">No active module yet</p>
+                <p className="text-[11px] text-zinc-500">Create your first medical module to start tracking lectures and exams.</p>
+                <button
+                  onClick={() => setActiveTab('modules')}
+                  className="mt-2 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl transition-colors cursor-pointer"
+                >
+                  + Add First Module
+                </button>
+              </div>
             )}
           </div>
 
@@ -342,17 +338,17 @@ export const DashboardView: React.FC = () => {
             <div className="flex justify-between text-xs mb-2">
               <span className="text-zinc-500">Progress</span>
               <span className="text-zinc-900 dark:text-white font-semibold">
-                {currentModule?.completedLectures || 0} / {currentModule?.totalLectures || 1} Lectures
+                {currentModule?.completedLectures || 0} / {currentModule ? (currentModule.totalLectures || 1) : 0} Lectures
               </span>
             </div>
             <div className="h-2 w-full bg-zinc-200 dark:bg-zinc-800 rounded-full overflow-hidden">
               <div 
                 className="h-full bg-indigo-500 rounded-full transition-all duration-1000"
-                style={{ width: `${Math.round(((currentModule?.completedLectures || 0) / (currentModule?.totalLectures || 1)) * 100)}%` }}
+                style={{ width: `${currentModule ? Math.round(((currentModule.completedLectures || 0) / (currentModule.totalLectures || 1)) * 100) : 0}%` }}
               />
             </div>
             <div className="flex justify-between items-center text-[10px] text-zinc-500 mt-3">
-              <span>{Math.round(((currentModule?.completedLectures || 0) / (currentModule?.totalLectures || 1)) * 100)}% Complete</span>
+              <span>{currentModule ? Math.round(((currentModule.completedLectures || 0) / (currentModule.totalLectures || 1)) * 100) : 0}% Complete</span>
               <button 
                 onClick={() => setActiveTab('modules')}
                 className="text-indigo-500 font-bold hover:underline cursor-pointer"
