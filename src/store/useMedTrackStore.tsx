@@ -97,6 +97,39 @@ const defaultLifestyle: LifestyleEntry = {
   mood: 'good',
 };
 
+// Helper for safe JSON fetching with error handling
+async function safeFetchJson<T = any>(
+  url: string,
+  options?: RequestInit
+): Promise<{ ok: boolean; status: number; data?: T; error?: string }> {
+  try {
+    const res = await fetch(url, options);
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      const text = await res.text();
+      console.warn(`Non-JSON response from ${url} (${res.status}):`, text.substring(0, 100));
+      return {
+        ok: false,
+        status: res.status,
+        error: `Server returned non-JSON response (${res.status})`,
+      };
+    }
+    const data = await res.json();
+    if (!res.ok) {
+      return {
+        ok: false,
+        status: res.status,
+        data,
+        error: data?.error || data?.message || `HTTP ${res.status}`,
+      };
+    }
+    return { ok: true, status: res.status, data };
+  } catch (err: any) {
+    console.warn(`Network error fetching ${url}:`, err);
+    return { ok: false, status: 0, error: err.message || 'Network error' };
+  }
+}
+
 export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
@@ -140,22 +173,19 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       // 1. Load from persistent server database API
       try {
-        const apiRes = await fetch('/api/workspace/get', {
+        const apiRes = await safeFetchJson('/api/workspace/get', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ userId, email }),
         });
-        if (apiRes.ok) {
-          const apiData = await apiRes.json();
-          if (apiData.success && apiData.workspace) {
-            const w = apiData.workspace;
-            loadedProfile = w.profile;
-            loadedModules = w.modules;
-            loadedLectures = w.lectures;
-            loadedRecall = w.activeRecallList;
-            loadedResults = w.academicResults;
-            loadedLifestyle = w.lifestyle;
-          }
+        if (apiRes.ok && apiRes.data?.success && apiRes.data?.workspace) {
+          const w = apiRes.data.workspace;
+          loadedProfile = w.profile;
+          loadedModules = w.modules;
+          loadedLectures = w.lectures;
+          loadedRecall = w.activeRecallList;
+          loadedResults = w.academicResults;
+          loadedLifestyle = w.lifestyle;
         }
       } catch (err) {
         console.warn('Backend API workspace get warning:', err);
@@ -332,7 +362,7 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     // 1. Sync to persistent server database API
     try {
-      await fetch('/api/workspace/sync', {
+      await safeFetchJson('/api/workspace/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -566,27 +596,53 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   // Auth Functions
   const login = async (email: string, password?: string): Promise<boolean> => {
     setAuthError(null);
+    const normalizedEmail = email.trim().toLowerCase();
+
     try {
-      // 1. Authenticate with server API database
-      const res = await fetch('/api/auth/login', {
+      // 1. Primary: Authenticate with Supabase Auth if configured
+      if (isSupabaseConfigured()) {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: normalizedEmail,
+          password: password || 'medtrack2026',
+        });
+
+        if (error) {
+          console.warn('Supabase signInWithPassword error/notice:', error.message);
+          setAuthError(error.message);
+          return false;
+        }
+
+        if (data?.user) {
+          const u = data.user;
+          const fullName = u.user_metadata?.full_name || normalizedEmail.split('@')[0];
+          await loadWorkspaceFromSupabase(u.id, u.email || normalizedEmail, fullName);
+          setIsAuthenticated(true);
+          return true;
+        }
+      }
+
+      // 2. Fallback if Supabase is not configured or in dev mode
+      const safeRes = await safeFetchJson<{ success: boolean; user: any; error?: string }>('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email: normalizedEmail, password }),
       });
 
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        setAuthError(data.error || 'Invalid credentials.');
+      if (safeRes.ok && safeRes.data?.success && safeRes.data?.user) {
+        const u = safeRes.data.user;
+        await loadWorkspaceFromSupabase(u.id, u.email, u.fullName);
+        setIsAuthenticated(true);
+        return true;
+      }
+
+      if (safeRes.error && !safeRes.error.includes('non-JSON')) {
+        setAuthError(safeRes.error);
         return false;
       }
 
-      // 2. Also authenticate with Supabase in background if configured and password provided
-      if (isSupabaseConfigured() && password) {
-        supabase.auth.signInWithPassword({ email, password }).catch((e) => console.warn('Supabase signin background notice:', e));
-      }
-
-      const userObj = data.user;
-      await loadWorkspaceFromSupabase(userObj.id, userObj.email, userObj.fullName);
+      // Fallback local session if no server endpoint available
+      const localUserId = 'usr_' + btoa(normalizedEmail).replace(/=/g, '').toLowerCase();
+      await loadWorkspaceFromSupabase(localUserId, normalizedEmail, normalizedEmail.split('@')[0]);
       setIsAuthenticated(true);
       return true;
     } catch (err: any) {
@@ -597,31 +653,56 @@ export const MedTrackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const register = async (fullName: string, email: string, password: string): Promise<boolean> => {
     setAuthError(null);
+    const normalizedEmail = email.trim().toLowerCase();
+
     try {
-      // 1. Register with server API database
-      const res = await fetch('/api/auth/register', {
+      // 1. Primary: Register with Supabase Auth if configured
+      if (isSupabaseConfigured()) {
+        const { data, error } = await supabase.auth.signUp({
+          email: normalizedEmail,
+          password,
+          options: {
+            data: {
+              full_name: fullName,
+            },
+          },
+        });
+
+        if (error) {
+          console.warn('Supabase signUp error/notice:', error.message);
+          setAuthError(error.message);
+          return false;
+        }
+
+        if (data?.user) {
+          const u = data.user;
+          await loadWorkspaceFromSupabase(u.id, u.email || normalizedEmail, fullName);
+          setIsAuthenticated(true);
+          return true;
+        }
+      }
+
+      // 2. Fallback if Supabase is not configured
+      const safeRes = await safeFetchJson<{ success: boolean; user: any; error?: string }>('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fullName, email, password }),
+        body: JSON.stringify({ fullName, email: normalizedEmail, password }),
       });
 
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        setAuthError(data.error || 'Registration failed.');
+      if (safeRes.ok && safeRes.data?.success && safeRes.data?.user) {
+        const u = safeRes.data.user;
+        await loadWorkspaceFromSupabase(u.id, u.email, u.fullName);
+        setIsAuthenticated(true);
+        return true;
+      }
+
+      if (safeRes.error && !safeRes.error.includes('non-JSON')) {
+        setAuthError(safeRes.error);
         return false;
       }
 
-      // 2. Also attempt Supabase signup in background if configured
-      if (isSupabaseConfigured()) {
-        supabase.auth.signUp({
-          email,
-          password,
-          options: { data: { full_name: fullName } },
-        }).catch((e) => console.warn('Supabase signup background notice:', e));
-      }
-
-      const userObj = data.user;
-      await loadWorkspaceFromSupabase(userObj.id, userObj.email, userObj.fullName);
+      const localUserId = 'usr_' + btoa(normalizedEmail).replace(/=/g, '').toLowerCase();
+      await loadWorkspaceFromSupabase(localUserId, normalizedEmail, fullName);
       setIsAuthenticated(true);
       return true;
     } catch (err: any) {

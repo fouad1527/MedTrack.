@@ -439,6 +439,11 @@ Provide a concise 2-sentence summary comparing whether their effort matched thei
     }
   });
 
+  // 404 JSON Fallback for unhandled /api/* endpoints
+  app.all('/api/*', (req, res) => {
+    res.status(404).json({ error: `API endpoint ${req.method} ${req.path} not found.` });
+  });
+
   // Serve static assets or Vite middleware
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
